@@ -13,6 +13,7 @@ redistribute your new version, it MUST be open source.
 -----------------------------------------------------------*/
 #include "stdafx.h"
 #include "AppDelegate.h"
+#include "../../../engine/AutoSwitch.h"
 
 #pragma comment(lib, "imm32")
 #define IMC_GETOPENSTATUS 0x0005
@@ -67,6 +68,29 @@ static bool _hasJustUsedHotKey = false;
 static INPUT backspaceEvent[2];
 static INPUT keyEvent[2];
 
+//auto switch keyboard layout (QWERTY / Dvorak) and language (English / Vietnamese)
+int vAutoSwitchLayout = 1;
+int vAutoSwitchLanguage = 1;
+static AutoSwitch _autoSwitch;
+static int _screenCount = 0; //characters on screen for the current word
+static bool _passedThrough = false;
+
+//count what OpenKey types, so a whole word can be deleted and retyped later
+static UINT CountedSendInput(UINT count, LPINPUT inputs, int size) {
+	for (UINT i = 0; i < count; i++) {
+		if (inputs[i].type != INPUT_KEYBOARD || (inputs[i].ki.dwFlags & KEYEVENTF_KEYUP))
+			continue;
+		WORD vk = inputs[i].ki.wVk;
+		if (inputs[i].ki.dwFlags & KEYEVENTF_UNICODE) _screenCount++;
+		else if (vk == VK_BACK) _screenCount--;
+		else if (vk == VK_LEFT) _screenCount--; //chromium fix: shift + left selects a char that the next char replaces
+		else if (vk == VK_INSERT) _autoSwitch.invalidate(); //paste mode: can not count
+		else if ((vk >= '0' && vk <= 'Z') || (vk >= VK_OEM_1 && vk <= VK_OEM_8)) _screenCount++;
+	}
+	return SendInput(count, inputs, size);
+}
+#define SendInput CountedSendInput
+
 LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam);
 VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
@@ -110,6 +134,8 @@ void OpenKeyInit() {
 	APP_GET_DATA(vOtherLanguage, 1);
 	APP_GET_DATA(vTempOffOpenKey, 0);
 	APP_GET_DATA(vFixChromiumBrowser, 0);
+	APP_GET_DATA(vAutoSwitchLayout, 1);
+	APP_GET_DATA(vAutoSwitchLanguage, 1);
 
 	//init convert tool
 	APP_GET_DATA(convertToolDontAlertWhenCompleted, 0);
@@ -489,11 +515,13 @@ static bool UnsetModifierMask(const Uint16& vkCode) {
 	return true;
 }
 
-LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
+static LRESULT passThroughKey(int nCode, WPARAM wParam, LPARAM lParam);
+
+static LRESULT keyboardHookProcessCore(int nCode, WPARAM wParam, LPARAM lParam) {
 	keyboardData = (KBDLLHOOKSTRUCT *)lParam;
 	//ignore my event
 	if (keyboardData->dwExtraInfo != 0) {
-		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+		return passThroughKey(nCode, wParam, lParam);
 	}
 	
 	//ignore if IME pad is open when typing Japanese/Chinese...
@@ -501,7 +529,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	HWND hIME = ImmGetDefaultIMEWnd(hWnd);
 	LRESULT isImeON = SendMessage(hIME, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0);
 	if (isImeON) {
-		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+		return passThroughKey(nCode, wParam, lParam);
 	}
 	
 	//check modifier key
@@ -558,7 +586,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 			_hasJustUsedHotKey = false;
 		}
 		_keycode = 0;
-		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+		return passThroughKey(nCode, wParam, lParam);
 	}
 
 	//if is in english mode
@@ -574,7 +602,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 				return NULL;
 			}
 		}
-		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+		return passThroughKey(nCode, wParam, lParam);
 	}
 
 	//handle keyboard
@@ -601,7 +629,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 					InsertKeyLength(1);
 				}
 			}
-			return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+			return passThroughKey(nCode, wParam, lParam);
 		} else if (pData->code == vWillProcess || pData->code == vRestore || pData->code == vRestoreAndStartNewSession) { //handle result signal
 			//fix autocomplete
 			if (vFixRecommendBrowser && pData->extCode != 4) {
@@ -644,7 +672,105 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 		}
 		return -1; //consume event
 	}
+	return passThroughKey(nCode, wParam, lParam);
+}
+
+static LRESULT passThroughKey(int nCode, WPARAM wParam, LPARAM lParam) {
+	_passedThrough = true;
 	return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+}
+
+static int GetForegroundLayout(HKL* hklOut = NULL) {
+	HWND hWnd = GetForegroundWindow();
+	HKL hkl = GetKeyboardLayout(GetWindowThreadProcessId(hWnd, NULL));
+	if (hklOut) *hklOut = hkl;
+	UINT vk = MapVirtualKeyEx(0x1F, MAPVK_VSC_TO_VK, hkl); //the key right of A
+	if (vk == 'S') return AUTO_LAYOUT_QWERTY;
+	if (vk == 'O') return AUTO_LAYOUT_DVORAK;
+	return AUTO_LAYOUT_UNKNOWN;
+}
+
+static void SwitchForegroundLayout(int layout) {
+	HKL current;
+	GetForegroundLayout(&current);
+	UINT wantVk = layout == AUTO_LAYOUT_DVORAK ? 'O' : 'S';
+	HKL target = NULL;
+	HKL list[64];
+	int count = GetKeyboardLayoutList(64, list);
+	for (int i = 0; i < count; i++) {
+		if (MapVirtualKeyEx(0x1F, MAPVK_VSC_TO_VK, list[i]) != wantVk) continue;
+		//prefer a layout of the same language as the current one
+		if (!target || LOWORD((UINT_PTR)list[i]) == LOWORD((UINT_PTR)current))
+			target = list[i];
+	}
+	if (!target) //not installed: load US / US-Dvorak for this session
+		target = LoadKeyboardLayout(layout == AUTO_LAYOUT_DVORAK ? _T("00010409") : _T("00000409"), KLF_NOTELLSHELL);
+	if (target)
+		PostMessage(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
+}
+
+//a word just ended: switch layout and/or retype the word. Returns true if the word was retyped.
+static bool HandleAutoSwitchWordEnd() {
+	autoSwitchSetModernOrthography(vUseModernOrthography != 0);
+	AutoSwitchResult result = _autoSwitch.endWord(GetForegroundLayout(),
+		vLanguage == 1 && vAutoSwitchLanguage && vCodeTable == 0,
+		vAutoSwitchLayout != 0);
+	if (result.switchLayout)
+		SwitchForegroundLayout(result.layout);
+	if (!result.replace || _screenCount <= 0 || _screenCount > 64)
+		return false;
+	int deleteCount = _screenCount;
+	for (int i = 0; i < deleteCount; i++)
+		SendInput(2, backspaceEvent, sizeof(INPUT));
+	for (char32_t ch : result.text) {
+		if (ch > 0xFFFF) continue;
+		prepareUnicodeEvent(keyEvent[0], (Uint16)ch, true);
+		prepareUnicodeEvent(keyEvent[1], (Uint16)ch, false);
+		SendInput(2, keyEvent, sizeof(INPUT));
+	}
+	startNewSession();
+	return true;
+}
+
+LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
+	KBDLLHOOKSTRUCT* data = (KBDLLHOOKSTRUCT*)lParam;
+	if (nCode < 0 || data->dwExtraInfo != 0 || (!vAutoSwitchLayout && !vAutoSwitchLanguage))
+		return keyboardHookProcessCore(nCode, wParam, lParam);
+	if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN)
+		return keyboardHookProcessCore(nCode, wParam, lParam);
+
+	DWORD vk = data->vkCode;
+	bool shortcut = (GetAsyncKeyState(VK_CONTROL) & 0x8000) || (GetAsyncKeyState(VK_MENU) & 0x8000) ||
+		(GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000);
+
+	switch (vk) {
+	case VK_LSHIFT: case VK_RSHIFT: case VK_SHIFT: case VK_CAPITAL:
+	case VK_LCONTROL: case VK_RCONTROL: case VK_CONTROL:
+	case VK_LMENU: case VK_RMENU: case VK_MENU: case VK_LWIN: case VK_RWIN:
+		return keyboardHookProcessCore(nCode, wParam, lParam);
+	case VK_SPACE: case VK_RETURN: case VK_TAB:
+		if (!shortcut && _autoSwitch.hasWord() && HandleAutoSwitchWordEnd()) {
+			_autoSwitch.reset();
+			_screenCount = 0;
+			return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam); //type the space itself
+		}
+		_autoSwitch.reset();
+		_screenCount = 0;
+		return keyboardHookProcessCore(nCode, wParam, lParam);
+	}
+
+	if (shortcut || (data->flags & LLKHF_EXTENDED) || !autoSwitchIsTrackedKey(data->scanCode)) {
+		_autoSwitch.invalidate(); //backspace, arrows, delete, shortcuts...
+		return keyboardHookProcessCore(nCode, wParam, lParam);
+	}
+	bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+	bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+	_autoSwitch.pushKey(data->scanCode, shift, caps);
+	_passedThrough = false;
+	LRESULT result = keyboardHookProcessCore(nCode, wParam, lParam);
+	if (_passedThrough)
+		_screenCount++; //the key itself reaches the app
+	return result;
 }
 
 LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -663,6 +789,7 @@ LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	case WM_NCXBUTTONUP:
 		//send event signal to Engine
 		vKeyHandleEvent(vKeyEvent::Mouse, vKeyEventState::MouseDown, 0);
+		_autoSwitch.invalidate();
 		if (IS_DOUBLE_CODE(vCodeTable)) { //VNI
 			_syncKey.clear();
 		}
@@ -672,6 +799,7 @@ LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {
+	_autoSwitch.invalidate();
 	//smart switch key
 	if (vUseSmartSwitchKey || vRememberCode) {
 		string& exe = OpenKeyHelper::getFrontMostAppExecuteName();

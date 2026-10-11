@@ -1,0 +1,51 @@
+name: Auto switch build
+
+on:
+  push:
+    branches: [ "master", "auto-switch" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: AutoSwitch unit tests
+      run: |
+        g++ -std=c++17 -O1 -Wall -I Sources/OpenKey/engine tests/autoswitch_test.cpp Sources/OpenKey/engine/AutoSwitch.cpp -o autoswitch_test
+        ./autoswitch_test
+
+  build:
+    runs-on: windows-latest
+    needs: test
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Build x64
+      run: msbuild -m -target:Rebuild -p:Configuration=Release -p:Platform=x64 .\Sources\OpenKey\win32\OpenKey\OpenKey.sln
+
+    - name: Upload build
+      uses: actions/upload-artifact@v4
+      with:
+        name: OpenKey64-auto-switch
+        path: Sources/OpenKey/win32/OpenKey/**/OpenKey64.exe
+
+    - name: Publish download link
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/auto-switch')
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        EXE=$(find Sources/OpenKey/win32/OpenKey -name OpenKey64.exe -path '*Release*' | head -1)
+        cp "$EXE" OpenKey64.exe
+        gh release delete auto-switch-latest --yes --cleanup-tag || true
+        gh release create auto-switch-latest OpenKey64.exe \
+          --title "OpenKey auto switch (latest)" \
+          --notes "Automatic QWERTY/Dvorak layout and English/Vietnamese switching. Built from ${GITHUB_SHA}."
