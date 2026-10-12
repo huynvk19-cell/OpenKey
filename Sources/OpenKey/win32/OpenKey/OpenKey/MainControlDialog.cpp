@@ -198,6 +198,10 @@ void MainControlDialog::initDialog() {
     checkFixChromium = GetDlgItem(hTabPage3, IDC_CHECK_FIX_CHROMIUM);
     createToolTip(checkFixChromium, IDS_STRING_FIX_CHROMIUM);
 
+    textExcludedApps = GetDlgItem(hTabPage3, IDC_EDIT_EXCLUDED_APPS);
+    SendMessage(textExcludedApps, EM_LIMITTEXT, 1024, 0);
+    createToolTip(textExcludedApps, IDS_STRING_EXCLUDED_APPS);
+
     /*------------end tab 3----------------*/
 
     SendDlgItemMessage(hDlg, IDBUTTON_OK, BM_SETIMAGE, IMAGE_ICON, (LPARAM)LoadIcon(hIns, MAKEINTRESOURCEW(IDI_ICON_OK_BUTTON)));
@@ -248,6 +252,9 @@ INT_PTR MainControlDialog::eventProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM
             }
             else if (HIWORD(wParam) == BN_CLICKED) {
                 this->onCheckboxClicked((HWND)lParam);
+            }
+            else if (HIWORD(wParam) == EN_CHANGE && (HWND)lParam == textExcludedApps) {
+                onExcludedAppsChanged();
             }
             else if (HIWORD(wParam) == EN_CHANGE) {
                 _lastKeyCode = OpenKeyManager::_lastKeyCode;
@@ -365,6 +372,8 @@ void MainControlDialog::fillData() {
     SendMessage(checkCheckNewVersion, BM_SETCHECK, vCheckNewVersion ? 1 : 0, 0);
     SendMessage(checkUseClipboard, BM_SETCHECK, vSendKeyStepByStep ? 0 : 1, 0);
     SendMessage(checkFixChromium, BM_SETCHECK, vFixChromiumBrowser ? 1 : 0, 0);
+    if (getWindowText(textExcludedApps) != getExcludedApps())
+        SetWindowText(textExcludedApps, getExcludedApps().c_str());
 
     EnableWindow(checkRestoreIfWrongSpelling, vCheckSpelling);
     EnableWindow(checkAllowZWJF, vCheckSpelling);
@@ -562,6 +571,19 @@ void MainControlDialog::onCheckboxClicked(const HWND& hWnd) {
         APP_SET_DATA(vFixChromiumBrowser, val ? 1 : 0);
     }
     SystemTrayHelper::updateData();
+}
+
+wstring MainControlDialog::getWindowText(const HWND& hWnd) {
+    int len = GetWindowTextLength(hWnd);
+    vector<WCHAR> buffer(len + 1, 0);
+    GetWindowText(hWnd, buffer.data(), len + 1);
+    return wstring(buffer.data());
+}
+
+void MainControlDialog::onExcludedAppsChanged() {
+    wstring apps = getWindowText(textExcludedApps);
+    if (apps != getExcludedApps())
+        setExcludedApps(apps);
 }
 
 void MainControlDialog::onCharacter(const HWND& hWnd, const UINT16& keyCode) {

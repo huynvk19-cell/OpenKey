@@ -197,6 +197,7 @@ void AppDelegate::onDefaultConfig() {
 	APP_SET_DATA(vOtherLanguage, 1);
 	APP_SET_DATA(vTempOffOpenKey, 0);
 	APP_SET_DATA(vFixChromiumBrowser, 0);
+	setExcludedApps(DEFAULT_EXCLUDED_APPS);
 
 	if (mainDialog) {
 		mainDialog->fillData();

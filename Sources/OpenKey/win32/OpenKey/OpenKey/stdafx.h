@@ -58,6 +58,10 @@ extern wchar_t _logBuffer[1024];
 #define APP_CLASS _T("OpenKeyVietnameseInputMethod")
 
 extern void saveSmartSwitchKeyData();
+#define DEFAULT_EXCLUDED_APPS L"Moonlight.exe;UltraViewer_Desktop.exe"
+extern void setExcludedApps(const wstring& apps, const bool& save = true);
+extern const wstring& getExcludedApps();
+extern bool isOpenKeyPausedInApp();
 
 extern int vLanguage;
 extern int vInputType;

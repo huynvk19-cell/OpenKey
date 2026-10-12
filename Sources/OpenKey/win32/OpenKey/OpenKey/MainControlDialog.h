@@ -27,12 +27,15 @@ private:
 	HWND checkSmartSwitchKey, checkCapsFirstChar, checkQuickTelex, checkUseMacro, checkUseMacroInEnglish;
 	HWND checkCreateDesktopShortcut, checkCheckNewVersion, checkRunAsAdmin, checkSupportMetroApp, checkMacroAutoCaps;
 	HWND checkFixChromium, checkRememberTableCode, checkTempOffOpenKey, checkAllowOtherLanguages;
+	HWND textExcludedApps;
 	HWND hUpdateButton;
 private:
 	void initDialog();
 	void onComboBoxSelected(const HWND& hCombobox, const int& comboboxId);
 	void onCheckboxClicked(const HWND& hWnd);
 	void onCharacter(const HWND& hWnd, const UINT16& keyCode);
+	void onExcludedAppsChanged();
+	wstring getWindowText(const HWND& hWnd);
 	void setSwitchKeyText(const HWND& hWnd, const UINT16 & keyCode);
 	void onTabIndexChanged();
 	void onUpdateButton();

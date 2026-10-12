@@ -67,6 +67,18 @@ static bool _hasJustUsedHotKey = false;
 static INPUT backspaceEvent[2];
 static INPUT keyEvent[2];
 
+//pause OpenKey while some apps are in front (remote desktop, game streaming,...)
+static wstring _excludedAppsText;
+static vector<wstring> _excludedApps;
+static DWORD _foregroundPid = 0;
+static bool _isPausedInApp = false;
+
+//keyboard layout of the foreground app
+static HKL _currentLayout = 0;
+static bool _isLatinLayout = true;
+static bool _isEnglishOrVietnameseLayout = true;
+static bool _isImeLayout = false;
+
 LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam);
 VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
@@ -110,6 +122,7 @@ void OpenKeyInit() {
 	APP_GET_DATA(vOtherLanguage, 1);
 	APP_GET_DATA(vTempOffOpenKey, 0);
 	APP_GET_DATA(vFixChromiumBrowser, 0);
+	setExcludedApps(OpenKeyHelper::getRegString(_T("excludedApps"), DEFAULT_EXCLUDED_APPS), false);
 
 	//init convert tool
 	APP_GET_DATA(convertToolDontAlertWhenCompleted, 0);
@@ -167,6 +180,119 @@ void OpenKeyInit() {
 	hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, keyboardHookProcess, hInstance, 0);
 	hMouseHook = SetWindowsHookEx(WH_MOUSE_LL, mouseHookProcess, hInstance, 0);
 	hSystemEvent = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, winEventProcCallback, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+}
+
+static wstring toLowerString(wstring str) {
+	if (!str.empty())
+		CharLowerBuffW(&str[0], (DWORD)str.size());
+	return str;
+}
+
+void setExcludedApps(const wstring& apps, const bool& save) {
+	_excludedAppsText = apps;
+	_excludedApps.clear();
+	wstring item;
+	for (size_t i = 0; i <= apps.size(); i++) {
+		WCHAR ch = i < apps.size() ? apps[i] : L';';
+		if (ch == L';' || ch == L',' || ch == L'\n' || ch == L'\r') {
+			size_t first = item.find_first_not_of(L" \t");
+			if (first != wstring::npos) {
+				item = toLowerString(item.substr(first, item.find_last_not_of(L" \t") - first + 1));
+				if (item.size() < 4 || item.compare(item.size() - 4, 4, L".exe") != 0)
+					item += L".exe";
+				_excludedApps.push_back(item);
+			}
+			item.clear();
+		} else {
+			item += ch;
+		}
+	}
+	_foregroundPid = 0; //force checking the front app again
+	if (save) {
+		OpenKeyHelper::setRegString(_T("excludedApps"), _excludedAppsText);
+	}
+}
+
+const wstring& getExcludedApps() {
+	return _excludedAppsText;
+}
+
+bool isOpenKeyPausedInApp() {
+	return _isPausedInApp;
+}
+
+static bool isExcludedProcess(const DWORD& pid) {
+	if (_excludedApps.empty() || pid == 0)
+		return false;
+	HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (process == NULL)
+		return false;
+	WCHAR path[MAX_PATH * 2];
+	DWORD size = MAX_PATH * 2;
+	BOOL success = QueryFullProcessImageNameW(process, 0, path, &size);
+	CloseHandle(process);
+	if (!success)
+		return false;
+	LPCWSTR exeName = wcsrchr(path, L'\\');
+	wstring name = toLowerString(exeName ? exeName + 1 : path);
+	return std::find(_excludedApps.begin(), _excludedApps.end(), name) != _excludedApps.end();
+}
+
+static void checkKeyboardLayout(const HKL& layout) {
+	if (layout == _currentLayout)
+		return;
+	_currentLayout = layout;
+	startNewSession();
+	_syncKey.clear();
+
+	//Vietnamese only makes sense on layouts that type latin letters (not Russian, Greek, Thai, Arabic,...)
+	int latinKeys = 0;
+	for (UINT vk = 'A'; vk <= 'Z'; vk++) {
+		UINT ch = MapVirtualKeyEx(vk, MAPVK_VK_TO_CHAR, layout) & 0xFFFF;
+		if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'))
+			latinKeys++;
+	}
+	_isLatinLayout = latinKeys >= 20;
+
+	WORD language = PRIMARYLANGID(LOWORD((DWORD_PTR)layout));
+	_isEnglishOrVietnameseLayout = language == LANG_ENGLISH || language == LANG_VIETNAMESE;
+	_isImeLayout = language == LANG_JAPANESE || language == LANG_CHINESE || language == LANG_KOREAN || ImmIsIME(layout);
+}
+
+/**
+ * Check the foreground app: pause OpenKey in excluded apps and follow its keyboard layout.
+ * Return true if OpenKey shouldn't touch the current key.
+ */
+static bool checkForegroundApp() {
+	HWND hWnd = GetForegroundWindow();
+	DWORD pid = 0;
+	DWORD threadId = GetWindowThreadProcessId(hWnd, &pid);
+	if (pid != _foregroundPid) {
+		_foregroundPid = pid;
+		bool paused = isExcludedProcess(pid);
+		if (paused != _isPausedInApp) {
+			_isPausedInApp = paused;
+			startNewSession();
+			_syncKey.clear();
+		}
+	}
+	if (_isPausedInApp)
+		return true;
+
+	checkKeyboardLayout(GetKeyboardLayout(threadId));
+	if (!_isLatinLayout)
+		return true;
+	if (!vOtherLanguage && !_isEnglishOrVietnameseLayout)
+		return true;
+
+	//ignore if IME pad is open when typing Japanese/Chinese...
+	if (_isImeLayout) {
+		DWORD_PTR isImeON = 0;
+		HWND hIME = ImmGetDefaultIMEWnd(hWnd);
+		if (hIME && SendMessageTimeout(hIME, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0, SMTO_ABORTIFHUNG, 50, &isImeON) && isImeON)
+			return true;
+	}
+	return false;
 }
 
 void saveSmartSwitchKeyData() {
@@ -496,14 +622,17 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 	}
 	
-	//ignore if IME pad is open when typing Japanese/Chinese...
-	HWND hWnd = GetForegroundWindow();
-	HWND hIME = ImmGetDefaultIMEWnd(hWnd);
-	LRESULT isImeON = SendMessage(hIME, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0);
-	if (isImeON) {
+	//paused app, non latin keyboard layout or IME is on: just keep modifier state
+	if (checkForegroundApp()) {
+		if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
+			SetModifierMask((Uint16)keyboardData->vkCode);
+		else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
+			UnsetModifierMask((Uint16)keyboardData->vkCode);
+		_lastFlag = 0;
+		_keycode = 0;
 		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 	}
-	
+
 	//check modifier key
 	if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
 		//LOG(L"Key down: %d\n", keyboardData->vkCode);
@@ -672,6 +801,16 @@ LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {
+	//pause/resume OpenKey for excluded apps
+	static bool trayShowsPaused = false;
+	checkForegroundApp();
+	if (trayShowsPaused != _isPausedInApp) {
+		trayShowsPaused = _isPausedInApp;
+		SystemTrayHelper::updateData();
+	}
+	if (_isPausedInApp)
+		return;
+
 	//smart switch key
 	if (vUseSmartSwitchKey || vRememberCode) {
 		string& exe = OpenKeyHelper::getFrontMostAppExecuteName();

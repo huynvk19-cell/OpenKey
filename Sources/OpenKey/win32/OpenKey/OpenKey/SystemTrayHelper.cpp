@@ -241,7 +241,11 @@ void SystemTrayHelper::createPopupMenu() {
 
 static void loadTrayIcon() {
 	int icon = 0;
-	if (vLanguage) {
+	if (isOpenKeyPausedInApp()) {
+		icon = vUseGrayIcon ? IDI_ICON_STATUS_ENG_10 : IDI_ICON_STATUS_ENG;
+		LoadString(GetModuleHandle(0), IDS_TRAY_TITLE_PAUSED, nid.szTip, 128);
+	}
+	else if (vLanguage) {
 		icon = vUseGrayIcon ? IDI_ICON_STATUS_VIET_10 : IDI_ICON_STATUS_VIET;
 		LoadString(GetModuleHandle(0), IDS_TRAY_TITLE_2, nid.szTip, 128);
 	}

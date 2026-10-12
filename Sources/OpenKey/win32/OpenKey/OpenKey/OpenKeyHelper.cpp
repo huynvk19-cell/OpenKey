@@ -67,6 +67,26 @@ int OpenKeyHelper::getRegInt(LPCTSTR key, const int & defaultValue) {
 	return val;
 }
 
+void OpenKeyHelper::setRegString(LPCTSTR key, const wstring& val) {
+	openKey();
+	RegSetValueEx(hKey, key, 0, REG_SZ, (LPBYTE)val.c_str(), ((DWORD)val.size() + 1) * sizeof(WCHAR));
+	RegCloseKey(hKey);
+}
+
+wstring OpenKeyHelper::getRegString(LPCTSTR key, const wstring& defaultValue) {
+	openKey();
+	wstring val = defaultValue;
+	DWORD type = 0, size = 0;
+	if (ERROR_SUCCESS == RegQueryValueEx(hKey, key, 0, &type, 0, &size) && type == REG_SZ) {
+		vector<WCHAR> buffer(size / sizeof(WCHAR) + 1, 0);
+		if (ERROR_SUCCESS == RegQueryValueEx(hKey, key, 0, 0, (LPBYTE)buffer.data(), &size)) {
+			val = buffer.data();
+		}
+	}
+	RegCloseKey(hKey);
+	return val;
+}
+
 void OpenKeyHelper::setRegBinary(LPCTSTR key, const BYTE * pData, const int & size) {
 	openKey();
 	RegSetValueEx(hKey, key, 0, REG_BINARY, pData, size);

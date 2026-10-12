@@ -25,6 +25,9 @@ public:
 	static void setRegInt(LPCTSTR key, const int& val);
 	static int getRegInt(LPCTSTR key, const int& defaultValue);
 
+	static void setRegString(LPCTSTR key, const wstring& val);
+	static wstring getRegString(LPCTSTR key, const wstring& defaultValue);
+
 	static void setRegBinary(LPCTSTR key, const BYTE* pData, const int& size);
 	static BYTE* getRegBinary(LPCTSTR key, DWORD& outSize);
 
