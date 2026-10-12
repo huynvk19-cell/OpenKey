@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: AutoSwitch sources are ASCII (MSVC reads them as ANSI)
+      run: "! grep -nP '[^\\x00-\\x7F]' Sources/OpenKey/engine/AutoSwitch.h Sources/OpenKey/engine/AutoSwitch.cpp"
+
     - name: AutoSwitch unit tests
       run: |
         g++ -std=c++17 -O1 -Wall -I Sources/OpenKey/engine tests/autoswitch_test.cpp Sources/OpenKey/engine/AutoSwitch.cpp -o autoswitch_test

@@ -290,7 +290,7 @@ int autoSwitchPrefixScore(const std::u32string& letters) {
 			for (int t = 0; t < 6; t++)
 				if (kToneTable[v][t] == c || vnUpper(kToneTable[v][t]) == c) p = kVowels[v];
 		p = plainOf(p);
-		if (p == U'Đ') p = 'd';
+		if (p == U'\u0110') p = 'd';
 		if (!isAsciiLetter(p)) return best;
 		plain += (char)asciiLower(p);
 	}
