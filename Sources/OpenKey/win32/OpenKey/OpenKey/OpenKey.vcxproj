@@ -78,11 +78,11 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <TargetName>$(ProjectName)32</TargetName>
+    <TargetName>NhaKey32</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <TargetName>$(ProjectName)64</TargetName>
+    <TargetName>NhaKey64</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -156,6 +156,8 @@
   <ItemGroup>
     <ClInclude Include="..\..\..\engine\ConvertTool.h" />
     <ClInclude Include="..\..\..\engine\DataType.h" />
+    <ClInclude Include="..\..\..\engine\AutoSwitch.h" />
+    <ClInclude Include="..\..\..\engine\AutoSwitchData.h" />
     <ClInclude Include="..\..\..\engine\Engine.h" />
     <ClInclude Include="..\..\..\engine\Macro.h" />
     <ClInclude Include="..\..\..\engine\platforms\linux.h" />
@@ -178,6 +180,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\engine\ConvertTool.cpp" />
+    <ClCompile Include="..\..\..\engine\AutoSwitch.cpp" />
     <ClCompile Include="..\..\..\engine\Engine.cpp" />
     <ClCompile Include="..\..\..\engine\Macro.cpp" />
     <ClCompile Include="..\..\..\engine\SmartSwitchKey.cpp" />

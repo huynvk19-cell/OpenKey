@@ -52,24 +52,14 @@ static HMENU otherCode;
 
 static NOTIFYICONDATA nid;
 
+#define POPUP_AUTO_LAYOUT 3000
+#define POPUP_RUN_ON_STARTUP 3010
+
+//NhaKey keeps the menu tiny: everything else just works by itself
 map<UINT, LPCTSTR> menuData = {
-	{POPUP_VIET_ON_OFF, _T("Bật Tiếng Việt")},
-	{POPUP_SPELLING, _T("Bật kiểm tra chính tả")},
-	{POPUP_SMART_SWITCH, _T("Bật loại trừ ứng dụng thông minh")},
-	{POPUP_USE_MACRO, _T("Bật gõ tắt")},
-	{POPUP_TELEX, _T("Kiểu gõ Telex")},
-	{POPUP_VNI, _T("Kiểu gõ VNI")},
-	{POPUP_SIMPLE_TELEX, _T("Kiểu gõ Simple Telex")},
-	{POPUP_UNICODE, _T("Unicode dựng sẵn")},
-	{POPUP_TCVN3, _T("TCVN3 (ABC)")},
-	{POPUP_VNI_WINDOWS, _T("VNI Windows")},
-	{POPUP_UNICODE_COMPOUND, _T("Unicode tổ hợp")},
-	{POPUP_VN_LOCALE_1258, _T("Vietnamese locale CP 1258")},
-	{POPUP_CONVERT_TOOL, _T("Công cụ chuyển mã...")},
-	{POPUP_QUICK_CONVERT, _T("Chuyển mã nhanh")},
-	{POPUP_MACRO_TABLE, _T("Cấu hình gõ tắt...")},
-	{POPUP_CONTROL_PANEL, _T("Bảng điều khiển...")},
-	{POPUP_ABOUT_OPENKEY, _T("Giới thiệu OpenKey")},
+	{POPUP_VIET_ON_OFF, _T("Tiếng Việt")},
+	{POPUP_AUTO_LAYOUT, _T("Tự đổi bàn phím")},
+	{POPUP_RUN_ON_STARTUP, _T("Mở cùng máy tính")},
 	{POPUP_OPENKEY_EXIT, _T("Thoát")},
 };
 
@@ -80,13 +70,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 	case WM_CREATE:
 		taskbarCreated = RegisterWindowMessage(_T("TaskbarCreated"));
 		break;
-	case WM_USER+2019:
-		AppDelegate::getInstance()->onControlPanel();
+	case WM_USER+2019: //opened again while running
+		SystemTrayHelper::showMessage(_T("NhaKey đang chạy"), _T("Cứ gõ bình thường, NhaKey tự lo."));
 		break;
 	case WM_TRAYMESSAGE: {
-		if (lParam == WM_LBUTTONDBLCLK) {
-			AppDelegate::getInstance()->onControlPanel();
-		}
 		if (lParam == WM_LBUTTONUP) {
 			AppDelegate::getInstance()->onToggleVietnamese();
 			SystemTrayHelper::updateData();
@@ -107,53 +94,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 			case POPUP_VIET_ON_OFF:
 				AppDelegate::getInstance()->onToggleVietnamese();
 				break;
-			case POPUP_SPELLING:
-				AppDelegate::getInstance()->onToggleCheckSpelling();
+			case POPUP_AUTO_LAYOUT:
+				APP_SET_DATA(vAutoSwitchLayout, vAutoSwitchLayout ? 0 : 1);
 				break;
-			case POPUP_SMART_SWITCH:
-				AppDelegate::getInstance()->onToggleUseSmartSwitchKey();
-				break;
-			case POPUP_USE_MACRO:
-				AppDelegate::getInstance()->onToggleUseMacro();
-				break;
-			case POPUP_MACRO_TABLE:
-				AppDelegate::getInstance()->onMacroTable();
-				break;
-			case POPUP_CONVERT_TOOL:
-				AppDelegate::getInstance()->onConvertTool();
-				break;
-			case POPUP_QUICK_CONVERT:
-				AppDelegate::getInstance()->onQuickConvert();
-				break;
-			case POPUP_TELEX:
-				AppDelegate::getInstance()->onInputType(0);
-				break;
-			case POPUP_VNI:
-				AppDelegate::getInstance()->onInputType(1);
-				break;
-			case POPUP_SIMPLE_TELEX:
-				AppDelegate::getInstance()->onInputType(2);
-				break;
-			case POPUP_UNICODE:
-				AppDelegate::getInstance()->onTableCode(0);
-				break;
-			case POPUP_TCVN3:
-				AppDelegate::getInstance()->onTableCode(1);
-				break;
-			case POPUP_VNI_WINDOWS:
-				AppDelegate::getInstance()->onTableCode(2);
-				break;
-			case POPUP_UNICODE_COMPOUND:
-				AppDelegate::getInstance()->onTableCode(3);
-				break;
-			case POPUP_VN_LOCALE_1258:
-				AppDelegate::getInstance()->onTableCode(4);
-				break;
-			case POPUP_CONTROL_PANEL:
-				AppDelegate::getInstance()->onControlPanel();
-				break;
-			case POPUP_ABOUT_OPENKEY:
-				AppDelegate::getInstance()->onOpenKeyAbout();
+			case POPUP_RUN_ON_STARTUP:
+				APP_SET_DATA(vRunWithWindows, vRunWithWindows ? 0 : 1);
+				OpenKeyHelper::registerRunOnStartup(vRunWithWindows);
 				break;
 			case POPUP_OPENKEY_EXIT:
 				AppDelegate::getInstance()->onOpenKeyExit();
@@ -202,52 +148,30 @@ HWND SystemTrayHelper::createFakeWindow(const HINSTANCE & hIns) {
 void SystemTrayHelper::createPopupMenu() {
 	popupMenu = CreatePopupMenu();
 	AppendMenu(popupMenu, MF_CHECKED, POPUP_VIET_ON_OFF, menuData[POPUP_VIET_ON_OFF]);
-	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
-	AppendMenu(popupMenu, MF_CHECKED, POPUP_SPELLING, menuData[POPUP_SPELLING]);
-	AppendMenu(popupMenu, MF_CHECKED, POPUP_SMART_SWITCH, menuData[POPUP_SMART_SWITCH]);
-	AppendMenu(popupMenu, MF_CHECKED, POPUP_USE_MACRO, menuData[POPUP_USE_MACRO]);
-	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
-	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_MACRO_TABLE, menuData[POPUP_MACRO_TABLE]);
-	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_CONVERT_TOOL, menuData[POPUP_CONVERT_TOOL]);
-	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_QUICK_CONVERT, menuData[POPUP_QUICK_CONVERT]);
-	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
-
-	//menuInputType = CreatePopupMenu();
-	AppendMenu(popupMenu, MF_CHECKED, POPUP_TELEX, menuData[POPUP_TELEX]);
-	AppendMenu(popupMenu, MF_CHECKED, POPUP_VNI, menuData[POPUP_VNI]);
-	AppendMenu(popupMenu, MF_CHECKED, POPUP_SIMPLE_TELEX, menuData[POPUP_SIMPLE_TELEX]);
-
-	//AppendMenu(popupMenu, MF_POPUP, (UINT_PTR)menuInputType, _T("Kiểu gõ"));
-	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
-
-	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_UNICODE, menuData[POPUP_UNICODE]);
-	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_TCVN3, menuData[POPUP_TCVN3]);
-	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_VNI_WINDOWS, menuData[POPUP_VNI_WINDOWS]);
-
-	otherCode = CreatePopupMenu();
-	AppendMenu(otherCode, MF_CHECKED, POPUP_UNICODE_COMPOUND, menuData[POPUP_UNICODE_COMPOUND]);
-	AppendMenu(otherCode, MF_CHECKED, POPUP_VN_LOCALE_1258, menuData[POPUP_VN_LOCALE_1258]);
-	AppendMenu(popupMenu, MF_POPUP, (UINT_PTR)otherCode, _T("Bảng mã khác"));
-
-	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
-
-	AppendMenu(popupMenu, MF_STRING, POPUP_CONTROL_PANEL, menuData[POPUP_CONTROL_PANEL]);
-	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_ABOUT_OPENKEY, menuData[POPUP_ABOUT_OPENKEY]);
+	AppendMenu(popupMenu, MF_CHECKED, POPUP_AUTO_LAYOUT, menuData[POPUP_AUTO_LAYOUT]);
+	AppendMenu(popupMenu, MF_CHECKED, POPUP_RUN_ON_STARTUP, menuData[POPUP_RUN_ON_STARTUP]);
 	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
 	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_OPENKEY_EXIT, menuData[POPUP_OPENKEY_EXIT]);
+}
 
-	SetMenuDefaultItem(popupMenu, POPUP_CONTROL_PANEL, false);
+void SystemTrayHelper::showMessage(LPCTSTR title, LPCTSTR text) {
+	NOTIFYICONDATA info = nid;
+	info.uFlags = NIF_INFO;
+	info.dwInfoFlags = NIIF_NONE | NIIF_NOSOUND;
+	lstrcpyn(info.szInfoTitle, title, ARRAYSIZE(info.szInfoTitle));
+	lstrcpyn(info.szInfo, text, ARRAYSIZE(info.szInfo));
+	Shell_NotifyIcon(NIM_MODIFY, &info);
 }
 
 static void loadTrayIcon() {
 	int icon = 0;
 	if (vLanguage) {
 		icon = vUseGrayIcon ? IDI_ICON_STATUS_VIET_10 : IDI_ICON_STATUS_VIET;
-		LoadString(GetModuleHandle(0), IDS_TRAY_TITLE_2, nid.szTip, 128);
+		lstrcpyn(nid.szTip, _T("NhaKey: Tiếng Việt (bấm để tắt)"), 128);
 	}
 	else {
 		icon = vUseGrayIcon ? IDI_ICON_STATUS_ENG_10 : IDI_ICON_STATUS_ENG;
-		LoadString(GetModuleHandle(0), IDS_TRAY_TITLE, nid.szTip, 128);
+		lstrcpyn(nid.szTip, _T("NhaKey: English (bấm để gõ Tiếng Việt)"), 128);
 	}
 	nid.hIcon = LoadIcon(GetModuleHandle(0), MAKEINTRESOURCE(icon));
 }
@@ -257,60 +181,8 @@ void SystemTrayHelper::updateData() {
 	Shell_NotifyIcon(NIM_MODIFY, &nid);
 
 	MODIFY_MENU(popupMenu, POPUP_VIET_ON_OFF, vLanguage);
-	MODIFY_MENU(popupMenu, POPUP_SPELLING, vCheckSpelling);
-	MODIFY_MENU(popupMenu, POPUP_SMART_SWITCH, vUseSmartSwitchKey);
-	MODIFY_MENU(popupMenu, POPUP_USE_MACRO, vUseMacro);
-	MODIFY_MENU(popupMenu, POPUP_TELEX, vInputType == 0);
-	MODIFY_MENU(popupMenu, POPUP_VNI, vInputType == 1);
-	MODIFY_MENU(popupMenu, POPUP_SIMPLE_TELEX, vInputType == 2);
-	MODIFY_MENU(popupMenu, POPUP_UNICODE, vCodeTable == 0);
-	MODIFY_MENU(popupMenu, POPUP_TCVN3, vCodeTable == 1);
-	MODIFY_MENU(popupMenu, POPUP_VNI_WINDOWS, vCodeTable == 2);
-	MODIFY_MENU(otherCode, POPUP_UNICODE_COMPOUND, vCodeTable == 3);
-	MODIFY_MENU(otherCode, POPUP_VN_LOCALE_1258, vCodeTable == 4);
-
-	wstring hotkey = L"";
-	bool hasAdd = false;
-	if (convertToolHotKey & 0x100) {
-		hotkey += L"Ctrl";
-		hasAdd = true;
-	}
-	if (convertToolHotKey & 0x200) {
-		if (hasAdd)
-			hotkey += L" + ";
-		hotkey += L"Alt";
-		hasAdd = true;
-	}
-	if (convertToolHotKey & 0x400) {
-		if (hasAdd)
-			hotkey += L" + ";
-		hotkey += L"Win";
-		hasAdd = true;
-	}
-	if (convertToolHotKey & 0x800) {
-		if (hasAdd)
-			hotkey += L" + ";
-		hotkey += L"Shift";
-		hasAdd = true;
-	}
-
-	unsigned short k = ((convertToolHotKey >> 24) & 0xFF);
-	if (k != 0xFE) {
-		if (hasAdd)
-			hotkey += L" + ";
-		if (k == VK_SPACE)
-			hotkey += L"Space";
-		else
-			hotkey += (wchar_t)k;
-	}
-
-	wstring hotKeyString = menuData[POPUP_QUICK_CONVERT];
-	if (hasAdd) {
-		hotKeyString += L" - [";
-		hotKeyString += hotkey;
-		hotKeyString += L"]";
-	}
-	ModifyMenu(popupMenu, POPUP_QUICK_CONVERT, MF_BYCOMMAND | MF_UNCHECKED, POPUP_QUICK_CONVERT, hotKeyString.c_str());
+	MODIFY_MENU(popupMenu, POPUP_AUTO_LAYOUT, vAutoSwitchLayout);
+	MODIFY_MENU(popupMenu, POPUP_RUN_ON_STARTUP, vRunWithWindows);
 }
 
 static HINSTANCE ins;

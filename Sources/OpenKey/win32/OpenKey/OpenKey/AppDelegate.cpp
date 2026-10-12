@@ -112,10 +112,12 @@ int AppDelegate::run(HINSTANCE hInstance) {
 	SystemTrayHelper::createSystemTrayIcon(hInstance);
 	SystemTrayHelper::updateData();
 
-	//create main control
-	if (vShowOnStartUp)
-		createMainDialog();
-	MessageBeep(MB_OK);
+	//NhaKey has no settings window: say hello once, then stay out of the way
+	if (OpenKeyHelper::getRegInt(_T("nhaKeyWelcomed"), 0) == 0) {
+		SystemTrayHelper::showMessage(_T("NhaKey đã sẵn sàng"),
+			_T("Cứ gõ bình thường. NhaKey tự nhận ra bàn phím và Tiếng Việt / English."));
+		OpenKeyHelper::setRegInt(_T("nhaKeyWelcomed"), 1);
+	}
 
 	//check update
 	if (vCheckNewVersion)
@@ -263,7 +265,7 @@ void AppDelegate::onQuickConvert() {
 		if (!convertToolDontAlertWhenCompleted) {
 			TCHAR msg[256];
 			LoadString(hInstance, IDS_STRING_CONVERT_COMPLETED, msg, 256);
-			MessageBox(NULL, msg, _T("OpenKey"), MB_OK);
+			MessageBox(NULL, msg, _T("NhaKey"), MB_OK);
 		}
 	}
 }
@@ -287,7 +289,7 @@ void AppDelegate::onTableCode(const int & code) {
 }
 
 void AppDelegate::onControlPanel() {
-	createMainDialog();
+	//NhaKey has no settings window; everything is in the tray menu
 }
 
 void AppDelegate::onOpenKeyAbout() {

@@ -36,6 +36,12 @@
     <ClInclude Include="..\..\..\engine\DataType.h">
       <Filter>engine</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\engine\AutoSwitch.h">
+      <Filter>engine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\engine\AutoSwitchData.h">
+      <Filter>engine</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\engine\Engine.h">
       <Filter>engine</Filter>
     </ClInclude>
@@ -93,6 +99,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\engine\ConvertTool.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\engine\AutoSwitch.cpp">
       <Filter>engine</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\engine\Engine.cpp">

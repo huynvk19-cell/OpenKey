@@ -225,7 +225,7 @@ INT_PTR MainControlDialog::eventProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM
             int msgboxID = MessageBox(
                 hDlg,
                 _T("Bạn có chắc chắn muốn thiết lập lại cài đặt gốc?"),
-                _T("OpenKey"),
+                _T("NhaKey"),
                 MB_ICONEXCLAMATION | MB_YESNO
             );
             if (msgboxID == IDYES) {
@@ -637,8 +637,8 @@ void MainControlDialog::requestRestartAsAdmin() {
     if (vRunAsAdmin && !IsUserAnAdmin()) {
         int msgboxID = MessageBox(
             hDlg,
-            _T("Bạn cần phải khởi động lại OpenKey để kích hoạt chế độ Admin!\nBạn có muốn khởi động lại OpenKey không?"),
-            _T("OpenKey"),
+            _T("Bạn cần phải khởi động lại NhaKey để kích hoạt chế độ Admin!\nBạn có muốn khởi động lại NhaKey không?"),
+            _T("NhaKey"),
             MB_ICONEXCLAMATION | MB_YESNO
         );
         if (msgboxID == IDYES) {
