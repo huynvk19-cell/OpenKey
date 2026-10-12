@@ -260,34 +260,29 @@ static bool startsWith(const char* word, const std::string& prefix) {
 	return strncmp(word, prefix.c_str(), prefix.size()) == 0;
 }
 
-static bool englishPrefix(const std::string& prefix) {
-	int lo = 0, hi = kEnglishWordsCount;
+// Highest score (zipf * 10) of any word starting with `prefix`, 0 if none.
+static int prefixScore(const AutoSwitchWord* table, int count, const std::string& prefix) {
+	int lo = 0, hi = count;
 	while (lo < hi) {
 		int mid = (lo + hi) / 2;
-		if (strcmp(kEnglishWords[mid].word, prefix.c_str()) < 0) lo = mid + 1; else hi = mid;
+		if (strcmp(table[mid].word, prefix.c_str()) < 0) lo = mid + 1; else hi = mid;
 	}
-	return lo < kEnglishWordsCount && startsWith(kEnglishWords[lo].word, prefix);
+	int best = 0;
+	for (int i = lo; i < count && startsWith(table[i].word, prefix); i++)
+		if (table[i].zipf10 > best) best = table[i].zipf10;
+	return best;
 }
 
-static bool vietnamesePrefix(const std::string& prefix) {
-	int lo = 0, hi = kVietnamesePlainCount;
-	while (lo < hi) {
-		int mid = (lo + hi) / 2;
-		if (strcmp(kVietnamesePlain[mid], prefix.c_str()) < 0) lo = mid + 1; else hi = mid;
-	}
-	return lo < kVietnamesePlainCount && startsWith(kVietnamesePlain[lo], prefix);
-}
-
-bool autoSwitchCouldBeWord(const std::u32string& letters) {
+int autoSwitchPrefixScore(const std::u32string& letters) {
 	std::string lower;
 	for (char32_t c : letters) {
-		if (!isAsciiLetter(c)) return false;
+		if (!isAsciiLetter(c)) return 0;
 		lower += (char)asciiLower(c);
 	}
-	if (englishPrefix(lower)) return true;
+	int best = prefixScore(kEnglishWords, kEnglishWordsCount, lower);
 	std::u32string vietnamese;
 	std::string key;
-	if (!autoSwitchTelex(letters, vietnamese, key)) return false;
+	if (!autoSwitchTelex(letters, vietnamese, key)) return best;
 	std::string plain;
 	for (char32_t c : vietnamese) {
 		char32_t p = c;
@@ -295,11 +290,16 @@ bool autoSwitchCouldBeWord(const std::u32string& letters) {
 			for (int t = 0; t < 6; t++)
 				if (kToneTable[v][t] == c || vnUpper(kToneTable[v][t]) == c) p = kVowels[v];
 		p = plainOf(p);
-		if (p == U'\u0110') p = 'd';
-		if (!isAsciiLetter(p)) return false;
+		if (p == U'Đ') p = 'd';
+		if (!isAsciiLetter(p)) return best;
 		plain += (char)asciiLower(p);
 	}
-	return vietnamesePrefix(plain);
+	int vn = prefixScore(kVietnamesePlain, kVietnamesePlainCount, plain);
+	return vn > best ? vn : best;
+}
+
+bool autoSwitchCouldBeWord(const std::u32string& letters) {
+	return autoSwitchPrefixScore(letters) > 0;
 }
 
 // ---------------------------------------------------------------- decision
@@ -351,7 +351,7 @@ void AutoSwitch::reset() {
 }
 
 // Could the text typed so far (on one layout) still become a word?
-// 1 = yes, 0 = no, -1 = can not tell yet.
+// > 0 = yes (best score of a word it could become), 0 = no, -1 = can not tell yet.
 static int couldStillBeWord(const std::u32string& all) {
 	size_t start = 0;
 	if (!all.empty() && !isAsciiLetter(all[0])) start = 1; // one opening quote or bracket
@@ -361,7 +361,7 @@ static int couldStillBeWord(const std::u32string& all) {
 		if (isAsciiLetter(all[j])) return 0;       // punctuation inside a word
 	if (all.size() - i >= 2) return 0;              // two or more symbols in a row
 	if (letters == 0) return start ? -1 : (all.size() >= 2 ? 0 : -1);
-	return autoSwitchCouldBeWord(all.substr(start, letters)) ? 1 : 0;
+	return autoSwitchPrefixScore(all.substr(start, letters));
 }
 
 int AutoSwitch::checkEarly(int currentLayout) const {
@@ -372,12 +372,21 @@ int AutoSwitch::checkEarly(int currentLayout) const {
 		current += autoSwitchCharFor(k.scanCode, k.shift, k.capsLock, currentLayout);
 		other += autoSwitchCharFor(k.scanCode, k.shift, k.capsLock, otherLayout);
 	}
-	if (couldStillBeWord(current) != 0) return AUTO_LAYOUT_UNKNOWN;
+	int currentScore = couldStillBeWord(current);
+	if (currentScore < 0) return AUTO_LAYOUT_UNKNOWN;
 	// the other reading must be plain letters that can still become a word
 	size_t letters = 0;
 	for (char32_t c : other) { if (!isAsciiLetter(c)) return AUTO_LAYOUT_UNKNOWN; letters++; }
-	if (letters < 2 || !autoSwitchCouldBeWord(other)) return AUTO_LAYOUT_UNKNOWN;
-	return otherLayout;
+	if (letters < 2) return AUTO_LAYOUT_UNKNOWN;
+	int otherScore = autoSwitchPrefixScore(other);
+	if (otherScore == 0) return AUTO_LAYOUT_UNKNOWN;
+	// switch when the current reading is impossible, or only leads to rare
+	// words while the other one leads to common words
+	if (currentScore == 0) return otherLayout;
+	int strong = _confirmedWords > 0 ? _earlyStrong : _earlyStrongFirst;
+	int margin = _confirmedWords > 0 ? _earlyMargin : _earlyMarginFirst;
+	if (otherScore >= strong && otherScore - currentScore >= margin) return otherLayout;
+	return AUTO_LAYOUT_UNKNOWN;
 }
 
 AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, bool allowLayoutSwitch) {
@@ -394,6 +403,8 @@ AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, boo
 	                && other.score() >= AUTO_SWITCH_MIN_OTHER_SCORE;
 	const Reading& r = doSwitch ? other : current;
 	if (doSwitch) _languageContext = 0; // probably a different person typing now
+	if (doSwitch) _confirmedWords = 0;
+	else if (current.score() > 0 && _confirmedWords < 100) _confirmedWords++;
 
 	bool vietnamese = false;
 	if (r.clean && r.vietnamese > 0 && vietnameseMode) {

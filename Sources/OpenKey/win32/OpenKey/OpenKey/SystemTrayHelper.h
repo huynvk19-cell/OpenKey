@@ -24,6 +24,7 @@ private:
 public:
 	static void createSystemTrayIcon(const HINSTANCE& hIns);
 	static void updateData();
+	static void showMessage(LPCTSTR title, LPCTSTR text);
 	static void removeSystemTray();
 };
 

@@ -140,6 +140,21 @@ void OpenKeyInit() {
 	APP_GET_DATA(vAutoSwitchLayout, 1);
 	APP_GET_DATA(vAutoSwitchLanguage, 1);
 
+	//NhaKey: one simple setup that just works, nothing to configure
+	vInputType = 0;              //Telex
+	vCodeTable = 0;              //Unicode
+	vCheckSpelling = 1;
+	vRestoreIfWrongSpelling = 1; //English words stay English
+	vSendKeyStepByStep = 1;      //needed to fix words automatically
+	vUseSmartSwitchKey = 0;      //language is detected per word instead
+	vRememberCode = 0;
+	vUseMacro = 0;
+	vTempOffSpelling = 0;
+	vTempOffOpenKey = 0;
+	vShowOnStartUp = 0;
+	vCheckNewVersion = 0;
+	vAutoSwitchLanguage = 1;
+
 	//init convert tool
 	APP_GET_DATA(convertToolDontAlertWhenCompleted, 0);
 	APP_GET_DATA(convertToolToAllCaps, 0);
@@ -693,8 +708,17 @@ static int LayoutOf(HKL hkl) {
 static int _expectedLayout = AUTO_LAYOUT_UNKNOWN; //just requested, the app may not have switched yet
 static DWORD _expectedUntil = 0;
 
-static int GetForegroundLayout(HKL* hklOut = NULL) {
+//the window that receives typing (a text box inside the foreground window)
+static HWND GetFocusWindow() {
 	HWND hWnd = GetForegroundWindow();
+	GUITHREADINFO info = { sizeof(GUITHREADINFO) };
+	if (GetGUIThreadInfo(GetWindowThreadProcessId(hWnd, NULL), &info) && info.hwndFocus)
+		return info.hwndFocus;
+	return hWnd;
+}
+
+static int GetForegroundLayout(HKL* hklOut = NULL) {
+	HWND hWnd = GetFocusWindow();
 	HKL hkl = GetKeyboardLayout(GetWindowThreadProcessId(hWnd, NULL));
 	if (hklOut) *hklOut = hkl;
 	int layout = LayoutOf(hkl);
@@ -722,7 +746,14 @@ static HKL SwitchForegroundLayout(int layout) {
 	if (!target) //not installed: load US / US-Dvorak for this session
 		target = LoadKeyboardLayout(layout == AUTO_LAYOUT_DVORAK ? _T("00010409") : _T("00000409"), KLF_NOTELLSHELL);
 	if (target) {
-		PostMessage(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
+		//switch the app being typed in, and the system-wide input method so the
+		//language bar on the taskbar shows the new layout (session only, not saved)
+		HWND focus = GetFocusWindow();
+		HWND top = GetForegroundWindow();
+		PostMessage(focus, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
+		if (top != focus)
+			PostMessage(top, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
+		SystemParametersInfo(SPI_SETDEFAULTINPUTLANG, 0, &target, SPIF_SENDCHANGE);
 		_expectedLayout = layout;
 		_expectedUntil = GetTickCount() + 1500;
 	}
@@ -834,6 +865,13 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 		_autoSwitch.invalidate(); //backspace, arrows, delete, shortcuts...
 		return keyboardHookProcessCore(nCode, wParam, lParam);
 	}
+
+	//nobody typed for a while: maybe someone else sat down, switch sooner
+	static DWORD lastKeyTime = 0;
+	DWORD now = GetTickCount();
+	if (!replayed && now - lastKeyTime > 10000)
+		_autoSwitch.forgetConfidence();
+	lastKeyTime = now;
 
 	bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 	bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;

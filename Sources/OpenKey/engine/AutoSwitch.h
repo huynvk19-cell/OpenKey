@@ -65,6 +65,18 @@ private:
 	std::vector<Key> _keys;
 	bool _valid = true;
 	int _languageContext = 0;
+	int _confirmedWords = 0; // words just typed correctly on the current layout
+public:
+	// Nobody typed for a while: maybe someone else sat down, so the next
+	// word is allowed to switch layout after fewer keys.
+	void forgetConfidence() { _confirmedWords = 0; }
+	bool isConfident() const { return _confirmedWords > 0; }
+
+	// tuning for checkEarly (zipf * 10): the other reading must reach a word
+	// at least this common, and beat the current reading by this margin.
+	// Bold right after a pause (first word), careful in the middle of typing.
+	int _earlyStrongFirst = 50, _earlyMarginFirst = 20;
+	int _earlyStrong = 60, _earlyMargin = 30;
 };
 
 // ---- helpers, exposed for tests ----
@@ -84,6 +96,8 @@ int autoSwitchEnglishScore(const std::u32string& word);
 int autoSwitchVietnameseScore(const std::string& key);
 // Can these letters still grow into an English word / Vietnamese syllable?
 bool autoSwitchCouldBeWord(const std::u32string& letters);
+// Highest score of a word these letters could become (0 = none).
+int autoSwitchPrefixScore(const std::u32string& letters);
 
 std::string autoSwitchToUtf8(const std::u32string& s);
 
