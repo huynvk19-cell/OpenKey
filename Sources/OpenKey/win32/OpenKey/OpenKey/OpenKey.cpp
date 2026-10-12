@@ -89,6 +89,9 @@ static UINT CountedSendInput(UINT count, LPINPUT inputs, int size) {
 	}
 	return SendInput(count, inputs, size);
 }
+static UINT RawSendInput(UINT count, LPINPUT inputs, int size) {
+	return SendInput(count, inputs, size);
+}
 #define SendInput CountedSendInput
 
 LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam);
@@ -680,33 +683,50 @@ static LRESULT passThroughKey(int nCode, WPARAM wParam, LPARAM lParam) {
 	return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 }
 
-static int GetForegroundLayout(HKL* hklOut = NULL) {
-	HWND hWnd = GetForegroundWindow();
-	HKL hkl = GetKeyboardLayout(GetWindowThreadProcessId(hWnd, NULL));
-	if (hklOut) *hklOut = hkl;
+static int LayoutOf(HKL hkl) {
 	UINT vk = MapVirtualKeyEx(0x1F, MAPVK_VSC_TO_VK, hkl); //the key right of A
 	if (vk == 'S') return AUTO_LAYOUT_QWERTY;
 	if (vk == 'O') return AUTO_LAYOUT_DVORAK;
 	return AUTO_LAYOUT_UNKNOWN;
 }
 
-static void SwitchForegroundLayout(int layout) {
+static int _expectedLayout = AUTO_LAYOUT_UNKNOWN; //just requested, the app may not have switched yet
+static DWORD _expectedUntil = 0;
+
+static int GetForegroundLayout(HKL* hklOut = NULL) {
+	HWND hWnd = GetForegroundWindow();
+	HKL hkl = GetKeyboardLayout(GetWindowThreadProcessId(hWnd, NULL));
+	if (hklOut) *hklOut = hkl;
+	int layout = LayoutOf(hkl);
+	if (_expectedLayout != AUTO_LAYOUT_UNKNOWN) {
+		if (layout == _expectedLayout || GetTickCount() > _expectedUntil)
+			_expectedLayout = AUTO_LAYOUT_UNKNOWN;
+		else
+			return _expectedLayout;
+	}
+	return layout;
+}
+
+static HKL SwitchForegroundLayout(int layout) {
 	HKL current;
 	GetForegroundLayout(&current);
-	UINT wantVk = layout == AUTO_LAYOUT_DVORAK ? 'O' : 'S';
 	HKL target = NULL;
 	HKL list[64];
 	int count = GetKeyboardLayoutList(64, list);
 	for (int i = 0; i < count; i++) {
-		if (MapVirtualKeyEx(0x1F, MAPVK_VSC_TO_VK, list[i]) != wantVk) continue;
+		if (LayoutOf(list[i]) != layout) continue;
 		//prefer a layout of the same language as the current one
 		if (!target || LOWORD((UINT_PTR)list[i]) == LOWORD((UINT_PTR)current))
 			target = list[i];
 	}
 	if (!target) //not installed: load US / US-Dvorak for this session
 		target = LoadKeyboardLayout(layout == AUTO_LAYOUT_DVORAK ? _T("00010409") : _T("00000409"), KLF_NOTELLSHELL);
-	if (target)
+	if (target) {
 		PostMessage(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
+		_expectedLayout = layout;
+		_expectedUntil = GetTickCount() + 1500;
+	}
+	return target;
 }
 
 //a word just ended: switch layout and/or retype the word. Returns true if the word was retyped.
@@ -732,8 +752,58 @@ static bool HandleAutoSwitchWordEnd() {
 	return true;
 }
 
+//mid-word switch: the keys typed so far are replayed on the new layout so
+//OpenKey's engine sees them again (Telex keeps working inside the word)
+#define AUTO_REPLAY_TAG 0x4E4B5250
+struct ReplayKey { UINT scanCode; bool shift; bool caps; };
+static vector<ReplayKey> _replayQueue;
+static int _replayLayout = AUTO_LAYOUT_UNKNOWN;
+
+static void ReplayWordOnLayout(int layout) {
+	vector<ReplayKey> keys;
+	bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+	for (size_t i = 0; i < _autoSwitch.keyCount(); i++)
+		keys.push_back({ _autoSwitch.keyScanCode(i), _autoSwitch.keyShift(i), caps });
+
+	//delete what is on screen for this word
+	int deleteCount = _screenCount > 0 && _screenCount <= 64 ? _screenCount : 0;
+	for (int i = 0; i < deleteCount; i++)
+		SendInput(2, backspaceEvent, sizeof(INPUT));
+	_screenCount = 0;
+	startNewSession();
+	_autoSwitch.reset();
+	_autoSwitch.setLanguageContext(0); //probably a different person typing now
+
+	HKL hkl = SwitchForegroundLayout(layout);
+	_replayLayout = layout;
+	vector<INPUT> inputs;
+	for (const ReplayKey& k : keys) {
+		_replayQueue.push_back(k);
+		INPUT in = {};
+		in.type = INPUT_KEYBOARD;
+		in.ki.wVk = (WORD)MapVirtualKeyEx(k.scanCode, MAPVK_VSC_TO_VK, hkl);
+		in.ki.wScan = (WORD)k.scanCode;
+		in.ki.dwExtraInfo = AUTO_REPLAY_TAG;
+		inputs.push_back(in);
+		in.ki.dwFlags = KEYEVENTF_KEYUP;
+		inputs.push_back(in);
+	}
+	if (!inputs.empty())
+		RawSendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT));
+}
+
 LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	KBDLLHOOKSTRUCT* data = (KBDLLHOOKSTRUCT*)lParam;
+	bool replayed = nCode >= 0 && data->dwExtraInfo == AUTO_REPLAY_TAG;
+	KBDLLHOOKSTRUCT copy;
+	if (replayed) { //let OpenKey handle it like a real key
+		if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
+			return 1;
+		copy = *data;
+		copy.dwExtraInfo = 0;
+		data = &copy;
+		lParam = (LPARAM)&copy;
+	}
 	if (nCode < 0 || data->dwExtraInfo != 0 || (!vAutoSwitchLayout && !vAutoSwitchLanguage))
 		return keyboardHookProcessCore(nCode, wParam, lParam);
 	if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN)
@@ -742,6 +812,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	DWORD vk = data->vkCode;
 	bool shortcut = (GetAsyncKeyState(VK_CONTROL) & 0x8000) || (GetAsyncKeyState(VK_MENU) & 0x8000) ||
 		(GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000);
+	if (replayed) shortcut = false;
 
 	switch (vk) {
 	case VK_LSHIFT: case VK_RSHIFT: case VK_SHIFT: case VK_CAPITAL:
@@ -759,17 +830,49 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 		return keyboardHookProcessCore(nCode, wParam, lParam);
 	}
 
-	if (shortcut || (data->flags & LLKHF_EXTENDED) || !autoSwitchIsTrackedKey(data->scanCode)) {
+	if (!replayed && (shortcut || (data->flags & LLKHF_EXTENDED) || !autoSwitchIsTrackedKey(data->scanCode))) {
 		_autoSwitch.invalidate(); //backspace, arrows, delete, shortcuts...
 		return keyboardHookProcessCore(nCode, wParam, lParam);
 	}
+
 	bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 	bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+	Uint32 savedFlag = _flag;
+	if (replayed && !_replayQueue.empty()) {
+		shift = _replayQueue.front().shift;
+		caps = _replayQueue.front().caps;
+		_replayQueue.erase(_replayQueue.begin());
+		//OpenKey reads shift / caps from its flags
+		_flag &= ~(MASK_SHIFT | MASK_CAPITAL);
+		if (shift) _flag |= MASK_SHIFT;
+		if (caps) _flag |= MASK_CAPITAL;
+	}
 	_autoSwitch.pushKey(data->scanCode, shift, caps);
+
+	if (!replayed && vAutoSwitchLayout) {
+		int target = _autoSwitch.checkEarly(GetForegroundLayout());
+		if (target != AUTO_LAYOUT_UNKNOWN) {
+			ReplayWordOnLayout(target); //includes this key
+			return 1;
+		}
+	}
+
 	_passedThrough = false;
 	LRESULT result = keyboardHookProcessCore(nCode, wParam, lParam);
-	if (_passedThrough)
+	if (replayed)
+		_flag = savedFlag;
+	if (_passedThrough) {
+		if (replayed) { //type the character of the new layout ourselves
+			char32_t ch = autoSwitchCharFor(data->scanCode, shift, caps, _replayLayout);
+			if (ch) {
+				prepareUnicodeEvent(keyEvent[0], (Uint16)ch, true);
+				prepareUnicodeEvent(keyEvent[1], (Uint16)ch, false);
+				SendInput(2, keyEvent, sizeof(INPUT));
+			}
+			return 1;
+		}
 		_screenCount++; //the key itself reaches the app
+	}
 	return result;
 }
 

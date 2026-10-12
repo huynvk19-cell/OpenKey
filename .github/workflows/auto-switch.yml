@@ -34,8 +34,8 @@ jobs:
     - name: Upload build
       uses: actions/upload-artifact@v4
       with:
-        name: OpenKey64-auto-switch
-        path: Sources/OpenKey/win32/OpenKey/**/OpenKey64.exe
+        name: NhaKey64
+        path: Sources/OpenKey/win32/OpenKey/**/NhaKey64.exe
 
     - name: Publish download link
       if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/auto-switch')
@@ -43,9 +43,9 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       shell: bash
       run: |
-        EXE=$(find Sources/OpenKey/win32/OpenKey -name OpenKey64.exe -path '*Release*' | head -1)
-        cp "$EXE" OpenKey64.exe
+        EXE=$(find Sources/OpenKey/win32/OpenKey -name NhaKey64.exe -path '*Release*' | head -1)
+        cp "$EXE" NhaKey64.exe
         gh release delete auto-switch-latest --yes --cleanup-tag || true
-        gh release create auto-switch-latest OpenKey64.exe \
-          --title "OpenKey auto switch (latest)" \
+        gh release create auto-switch-latest NhaKey64.exe \
+          --title "NhaKey (latest)" \
           --notes "Automatic QWERTY/Dvorak layout and English/Vietnamese switching. Built from ${GITHUB_SHA}."

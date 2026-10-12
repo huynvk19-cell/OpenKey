@@ -44,6 +44,15 @@ public:
 	bool hasWord() const { return !_keys.empty(); }
 	bool isValid() const { return _valid; }
 
+	// Called after each key: if the word typed so far can not become a word
+	// on the current layout but can on the other one, returns the layout to
+	// switch to right now (mid-word). Otherwise AUTO_LAYOUT_UNKNOWN.
+	int checkEarly(int currentLayout) const;
+	// The keys typed so far in this word (for replaying them after a switch).
+	size_t keyCount() const { return _keys.size(); }
+	unsigned int keyScanCode(size_t i) const { return _keys[i].scanCode; }
+	bool keyShift(size_t i) const { return _keys[i].shift; }
+
 	// The word ended (space, enter, tab). Decide what to do, then reset.
 	AutoSwitchResult endWord(int currentLayout, bool vietnameseMode, bool allowLayoutSwitch = true);
 
@@ -73,6 +82,8 @@ void autoSwitchSetModernOrthography(bool modern);
 // Word frequency (zipf * 10, 0 = unknown).
 int autoSwitchEnglishScore(const std::u32string& word);
 int autoSwitchVietnameseScore(const std::string& key);
+// Can these letters still grow into an English word / Vietnamese syllable?
+bool autoSwitchCouldBeWord(const std::u32string& letters);
 
 std::string autoSwitchToUtf8(const std::u32string& s);
 

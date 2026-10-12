@@ -167,6 +167,31 @@ int main() {
 		check(r.switchLayout && r.text == u32("hello"), "English mode: still switches layout");
 	}
 
+	// --- Early (mid-word) switch
+	{
+		auto earlyAt = [](const char* text, int typed, int active) {
+			AutoSwitch as;
+			char buf[2] = { 0, 0 };
+			for (int i = 0; text[i]; i++) {
+				buf[0] = text[i];
+				typeAs(as, buf, typed);
+				if (as.checkEarly(active) != AUTO_LAYOUT_UNKNOWN) return i + 1;
+			}
+			return 0;
+		};
+		int n = earlyAt("hello", Q, D);
+		check(n >= 2 && n <= 3, "QWERTY 'hello' on Dvorak switches by the 3rd key, got " + std::to_string(n));
+		n = earlyAt("khoong", Q, D);
+		check(n >= 2 && n <= 4, "QWERTY 'khoong' on Dvorak switches early, got " + std::to_string(n));
+		n = earlyAt("keyboard", D, Q);
+		check(n >= 2 && n <= 4, "Dvorak 'keyboard' on QWERTY switches early, got " + std::to_string(n));
+		check(earlyAt("hello", Q, Q) == 0, "QWERTY 'hello' on QWERTY never switches early");
+		check(earlyAt("nguwowif", D, D) == 0, "Dvorak 'nguwowif' on Dvorak never switches early");
+		AutoSwitch as;
+		typeAs(as, "he", Q);
+		check(as.keyCount() == 2 && as.keyScanCode(0) == 0x23, "keys are kept for replay");
+	}
+
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

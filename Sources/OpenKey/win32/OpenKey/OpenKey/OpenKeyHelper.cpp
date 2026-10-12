@@ -22,7 +22,7 @@ redistribute your new version, it MUST be open source.
 
 static BYTE* _regData = 0;
 
-static LPCTSTR sk = TEXT("SOFTWARE\\TuyenMai\\OpenKey");
+static LPCTSTR sk = TEXT("SOFTWARE\\NhaKey");
 static HKEY hKey;
 static LPCTSTR _runOnStartupKeyPath = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 static TCHAR _executePath[MAX_PATH];
@@ -96,19 +96,19 @@ void OpenKeyHelper::registerRunOnStartup(const int& val) {
 		if (vRunAsAdmin) {
 			string path = wideStringToUtf8(getFullPath());
 			char buff[MAX_PATH];
-			sprintf_s(buff, "schtasks /create /sc onlogon /tn OpenKey /rl highest /tr \"%s\" /f", path.c_str());
+			sprintf_s(buff, "schtasks /create /sc onlogon /tn NhaKey /rl highest /tr \"%s\" /f", path.c_str());
 			WinExec(buff, SW_HIDE);
 		} else {
 			RegOpenKeyEx(HKEY_CURRENT_USER, _runOnStartupKeyPath, NULL, KEY_ALL_ACCESS, &hKey);
 			wstring path = getFullPath();
-			RegSetValueEx(hKey, _T("OpenKey"), 0, REG_SZ, (byte*)path.c_str(), ((DWORD)path.size() + 1) * sizeof(TCHAR));
+			RegSetValueEx(hKey, _T("NhaKey"), 0, REG_SZ, (byte*)path.c_str(), ((DWORD)path.size() + 1) * sizeof(TCHAR));
 			RegCloseKey(hKey);
 		}
 	} else {
 		RegOpenKeyEx(HKEY_CURRENT_USER, _runOnStartupKeyPath, NULL, KEY_ALL_ACCESS, &hKey);
-		RegDeleteValue(hKey, _T("OpenKey"));
+		RegDeleteValue(hKey, _T("NhaKey"));
 		RegCloseKey(hKey);
-		WinExec("schtasks /delete  /tn OpenKey /f", SW_HIDE);
+		WinExec("schtasks /delete  /tn NhaKey /f", SW_HIDE);
 	}
 }
 
@@ -136,8 +136,8 @@ string& OpenKeyHelper::getFrontMostAppExecuteName() {
 		return _unknownProgram;
 	}
 	_exeName = _tcsrchr(_exePath, '\\') + 1;
-	if (wcscmp(_exeName, _T("OpenKey64.exe")) == 0 ||
-		wcscmp(_exeName, _T("OpenKey32.exe")) == 0 || 
+	if (wcscmp(_exeName, _T("NhaKey64.exe")) == 0 ||
+		wcscmp(_exeName, _T("NhaKey32.exe")) == 0 || 
 		wcscmp(_exeName, _T("explorer.exe")) == 0) {
 		return _exeNameUtf8;
 	}

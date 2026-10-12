@@ -256,6 +256,52 @@ int autoSwitchVietnameseScore(const std::string& key) {
 	return lookup(kVietnameseSyllables, kVietnameseSyllablesCount, key);
 }
 
+static bool startsWith(const char* word, const std::string& prefix) {
+	return strncmp(word, prefix.c_str(), prefix.size()) == 0;
+}
+
+static bool englishPrefix(const std::string& prefix) {
+	int lo = 0, hi = kEnglishWordsCount;
+	while (lo < hi) {
+		int mid = (lo + hi) / 2;
+		if (strcmp(kEnglishWords[mid].word, prefix.c_str()) < 0) lo = mid + 1; else hi = mid;
+	}
+	return lo < kEnglishWordsCount && startsWith(kEnglishWords[lo].word, prefix);
+}
+
+static bool vietnamesePrefix(const std::string& prefix) {
+	int lo = 0, hi = kVietnamesePlainCount;
+	while (lo < hi) {
+		int mid = (lo + hi) / 2;
+		if (strcmp(kVietnamesePlain[mid], prefix.c_str()) < 0) lo = mid + 1; else hi = mid;
+	}
+	return lo < kVietnamesePlainCount && startsWith(kVietnamesePlain[lo], prefix);
+}
+
+bool autoSwitchCouldBeWord(const std::u32string& letters) {
+	std::string lower;
+	for (char32_t c : letters) {
+		if (!isAsciiLetter(c)) return false;
+		lower += (char)asciiLower(c);
+	}
+	if (englishPrefix(lower)) return true;
+	std::u32string vietnamese;
+	std::string key;
+	if (!autoSwitchTelex(letters, vietnamese, key)) return false;
+	std::string plain;
+	for (char32_t c : vietnamese) {
+		char32_t p = c;
+		for (int v = 0; kVowels[v]; v++)
+			for (int t = 0; t < 6; t++)
+				if (kToneTable[v][t] == c || vnUpper(kToneTable[v][t]) == c) p = kVowels[v];
+		p = plainOf(p);
+		if (p == U'\u0110') p = 'd';
+		if (!isAsciiLetter(p)) return false;
+		plain += (char)asciiLower(p);
+	}
+	return vietnamesePrefix(plain);
+}
+
 // ---------------------------------------------------------------- decision
 namespace {
 struct Reading {
@@ -302,6 +348,36 @@ void AutoSwitch::invalidate() { _valid = false; }
 void AutoSwitch::reset() {
 	_keys.clear();
 	_valid = true;
+}
+
+// Could the text typed so far (on one layout) still become a word?
+// 1 = yes, 0 = no, -1 = can not tell yet.
+static int couldStillBeWord(const std::u32string& all) {
+	size_t start = 0;
+	if (!all.empty() && !isAsciiLetter(all[0])) start = 1; // one opening quote or bracket
+	size_t letters = 0, i = start;
+	while (i < all.size() && isAsciiLetter(all[i])) { i++; letters++; }
+	for (size_t j = i; j < all.size(); j++)
+		if (isAsciiLetter(all[j])) return 0;       // punctuation inside a word
+	if (all.size() - i >= 2) return 0;              // two or more symbols in a row
+	if (letters == 0) return start ? -1 : (all.size() >= 2 ? 0 : -1);
+	return autoSwitchCouldBeWord(all.substr(start, letters)) ? 1 : 0;
+}
+
+int AutoSwitch::checkEarly(int currentLayout) const {
+	if (!_valid || _keys.size() < 2 || currentLayout == AUTO_LAYOUT_UNKNOWN) return AUTO_LAYOUT_UNKNOWN;
+	int otherLayout = currentLayout == AUTO_LAYOUT_QWERTY ? AUTO_LAYOUT_DVORAK : AUTO_LAYOUT_QWERTY;
+	std::u32string current, other;
+	for (const Key& k : _keys) {
+		current += autoSwitchCharFor(k.scanCode, k.shift, k.capsLock, currentLayout);
+		other += autoSwitchCharFor(k.scanCode, k.shift, k.capsLock, otherLayout);
+	}
+	if (couldStillBeWord(current) != 0) return AUTO_LAYOUT_UNKNOWN;
+	// the other reading must be plain letters that can still become a word
+	size_t letters = 0;
+	for (char32_t c : other) { if (!isAsciiLetter(c)) return AUTO_LAYOUT_UNKNOWN; letters++; }
+	if (letters < 2 || !autoSwitchCouldBeWord(other)) return AUTO_LAYOUT_UNKNOWN;
+	return otherLayout;
 }
 
 AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, bool allowLayoutSwitch) {
