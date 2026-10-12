@@ -760,26 +760,45 @@ static HKL SwitchForegroundLayout(int layout) {
 	return target;
 }
 
-//a word just ended: switch layout and/or retype the word. Returns true if the word was retyped.
-static bool HandleAutoSwitchWordEnd() {
-	autoSwitchSetModernOrthography(vUseModernOrthography != 0);
-	AutoSwitchResult result = _autoSwitch.endWord(GetForegroundLayout(),
-		vLanguage == 1 && vAutoSwitchLanguage && vCodeTable == 0,
-		vAutoSwitchLayout != 0);
-	if (result.switchLayout)
-		SwitchForegroundLayout(result.layout);
-	if (!result.replace || _screenCount <= 0 || _screenCount > 64)
-		return false;
-	int deleteCount = _screenCount;
-	for (int i = 0; i < deleteCount; i++)
-		SendInput(2, backspaceEvent, sizeof(INPUT));
-	for (char32_t ch : result.text) {
+static int _previousWordScreen = -1; //characters of the word before the last space, -1 = unknown
+
+static void TypeText(const std::u32string& text) {
+	for (char32_t ch : text) {
 		if (ch > 0xFFFF) continue;
 		prepareUnicodeEvent(keyEvent[0], (Uint16)ch, true);
 		prepareUnicodeEvent(keyEvent[1], (Uint16)ch, false);
 		SendInput(2, keyEvent, sizeof(INPUT));
 	}
+}
+
+//a word just ended: switch layout and/or retype the word. Returns true if the word was retyped.
+static bool HandleAutoSwitchWordEnd(bool endsWithSpace) {
+	autoSwitchSetModernOrthography(vUseModernOrthography != 0);
+	AutoSwitchResult result = _autoSwitch.endWord(GetForegroundLayout(),
+		vLanguage == 1 && vAutoSwitchLanguage && vCodeTable == 0,
+		vAutoSwitchLayout != 0);
+	if (!endsWithSpace)
+		_autoSwitch.breakPair();
+	if (result.switchLayout)
+		SwitchForegroundLayout(result.layout);
+	int wordScreen = _screenCount;
+	if (!result.replace || _screenCount <= 0 || _screenCount > 64) {
+		_previousWordScreen = endsWithSpace && wordScreen > 0 && wordScreen <= 64 ? wordScreen : -1;
+		return false;
+	}
+	int deleteCount = _screenCount;
+	bool fixPrevious = result.replacePrevious && _previousWordScreen > 0;
+	if (fixPrevious) //the word before, and the space after it
+		deleteCount += _previousWordScreen + 1;
+	for (int i = 0; i < deleteCount; i++)
+		SendInput(2, backspaceEvent, sizeof(INPUT));
+	if (fixPrevious) {
+		TypeText(result.previousText);
+		TypeText(U" ");
+	}
+	TypeText(result.text);
 	startNewSession();
+	_previousWordScreen = endsWithSpace ? (int)result.text.size() : -1;
 	return true;
 }
 
@@ -803,6 +822,7 @@ static void ReplayWordOnLayout(int layout) {
 	_screenCount = 0;
 	startNewSession();
 	_autoSwitch.reset();
+	_autoSwitch.breakPair();
 	_autoSwitch.setLanguageContext(0); //probably a different person typing now
 
 	HKL hkl = SwitchForegroundLayout(layout);
@@ -851,10 +871,14 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	case VK_LMENU: case VK_RMENU: case VK_MENU: case VK_LWIN: case VK_RWIN:
 		return keyboardHookProcessCore(nCode, wParam, lParam);
 	case VK_SPACE: case VK_RETURN: case VK_TAB:
-		if (!shortcut && _autoSwitch.hasWord() && HandleAutoSwitchWordEnd()) {
+		if (!shortcut && _autoSwitch.hasWord() && HandleAutoSwitchWordEnd(vk == VK_SPACE)) {
 			_autoSwitch.reset();
 			_screenCount = 0;
 			return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam); //type the space itself
+		}
+		if (!_autoSwitch.hasWord()) { //two spaces, enter on an empty line...
+			_autoSwitch.breakPair();
+			_previousWordScreen = -1;
 		}
 		_autoSwitch.reset();
 		_screenCount = 0;
@@ -863,6 +887,7 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 
 	if (!replayed && (shortcut || (data->flags & LLKHF_EXTENDED) || !autoSwitchIsTrackedKey(data->scanCode))) {
 		_autoSwitch.invalidate(); //backspace, arrows, delete, shortcuts...
+		_previousWordScreen = -1;
 		return keyboardHookProcessCore(nCode, wParam, lParam);
 	}
 

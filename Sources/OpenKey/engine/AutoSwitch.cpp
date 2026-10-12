@@ -303,8 +303,7 @@ bool autoSwitchCouldBeWord(const std::u32string& letters) {
 }
 
 // ---------------------------------------------------------------- decision
-namespace {
-struct Reading {
+struct AutoSwitchReading {
 	std::u32string all, prefix, core, suffix;
 	bool clean = false;     // core is letters only
 	int english = 0;
@@ -314,7 +313,7 @@ struct Reading {
 
 	int score() const { return clean ? (english > vietnamese ? english : vietnamese) : 0; }
 };
-}
+typedef AutoSwitchReading Reading;
 
 template <class Keys>
 static Reading readAs(const Keys& keys, int layout) {
@@ -343,7 +342,7 @@ void AutoSwitch::pushKey(unsigned int scanCode, bool shift, bool capsLock) {
 	_keys.push_back({ scanCode, shift, capsLock });
 }
 
-void AutoSwitch::invalidate() { _valid = false; }
+void AutoSwitch::invalidate() { _valid = false; _previousLean = 0; }
 
 void AutoSwitch::reset() {
 	_keys.clear();
@@ -389,24 +388,9 @@ int AutoSwitch::checkEarly(int currentLayout) const {
 	return AUTO_LAYOUT_UNKNOWN;
 }
 
-AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, bool allowLayoutSwitch) {
-	AutoSwitchResult result;
-	if (!_valid || _keys.empty() || currentLayout == AUTO_LAYOUT_UNKNOWN) {
-		reset();
-		return result;
-	}
-	int otherLayout = currentLayout == AUTO_LAYOUT_QWERTY ? AUTO_LAYOUT_DVORAK : AUTO_LAYOUT_QWERTY;
-	Reading current = readAs(_keys, currentLayout);
-	Reading other = readAs(_keys, otherLayout);
-
-	bool doSwitch = allowLayoutSwitch && current.score() == 0 && other.clean && other.core.size() >= 2
-	                && other.score() >= AUTO_SWITCH_MIN_OTHER_SCORE;
-	const Reading& r = doSwitch ? other : current;
-	if (doSwitch) _languageContext = 0; // probably a different person typing now
-	if (doSwitch) _confirmedWords = 0;
-	else if (current.score() > 0 && _confirmedWords < 100) _confirmedWords++;
-
-	bool vietnamese = false;
+// The word as it should appear for one reading (English or Vietnamese).
+std::u32string AutoSwitch::chooseText(const Reading& r, bool vietnameseMode, bool& vietnamese) const {
+	vietnamese = false;
 	if (r.clean && r.vietnamese > 0 && vietnameseMode) {
 		if (!r.vietnameseChanged) {
 			vietnamese = true; // same letters either way
@@ -418,14 +402,63 @@ AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, boo
 			vietnamese = vn > en;
 		}
 	}
+	return r.clean ? r.prefix + (vietnamese ? r.vietnameseText : r.core) + r.suffix : r.all;
+}
 
+AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, bool allowLayoutSwitch) {
+	AutoSwitchResult result;
+	if (!_valid || _keys.empty() || currentLayout == AUTO_LAYOUT_UNKNOWN) {
+		_previousLean = 0;
+		reset();
+		return result;
+	}
+	int otherLayout = currentLayout == AUTO_LAYOUT_QWERTY ? AUTO_LAYOUT_DVORAK : AUTO_LAYOUT_QWERTY;
+	Reading current = readAs(_keys, currentLayout);
+	Reading other = readAs(_keys, otherLayout);
+
+	// At the end of a word, switch when the other reading is a real word made
+	// only of letters and the current one is not a word, has stray symbols
+	// (",ao" for "was"), or is a much rarer word ("yr" for "to").
+	bool otherPlain = other.clean && other.prefix.empty() && other.suffix.size() <= 1 && other.core.size() >= 2;
+	bool currentHasSymbols = !current.prefix.empty() || !current.suffix.empty() || !current.clean;
+	int currentScore = currentHasSymbols ? 0 : current.score();
+	int lean = (allowLayoutSwitch && otherPlain && other.score() >= AUTO_SWITCH_MIN_OTHER_SCORE)
+	           ? other.score() - currentScore : 0;
+	bool doSwitch = lean > 0 && (currentScore == 0 || (other.score() >= _endStrong && lean >= _endMargin));
+	// Two words in a row that both read better on the other layout ("an all"):
+	// switch and fix both words.
+	bool fixPrevious = false;
+	if (!doSwitch && lean > 0 && _previousLean > 0 && lean + _previousLean >= _pairMargin) {
+		doSwitch = true;
+		fixPrevious = true;
+	}
+
+	const Reading& r = doSwitch ? other : current;
+	if (doSwitch) _languageContext = 0; // probably a different person typing now
+	if (doSwitch) _confirmedWords = 0;
+	else if (current.score() > 0 && _confirmedWords < 100) _confirmedWords++;
+
+	bool vietnamese = false;
+	result.text = chooseText(r, vietnameseMode, vietnamese);
 	result.switchLayout = doSwitch;
 	result.layout = doSwitch ? otherLayout : currentLayout;
 	result.vietnamese = vietnamese;
-	result.text = r.clean ? r.prefix + (vietnamese ? r.vietnameseText : r.core) + r.suffix : r.all;
 	// OpenKey keeps a valid Vietnamese word on screen, so an English choice
 	// for such a word needs a retype. A layout switch always needs one.
 	result.replace = doSwitch || (vietnameseMode && r.clean && r.vietnamese > 0 && r.vietnameseChanged && !vietnamese);
+	if (fixPrevious) {
+		result.replacePrevious = true;
+		result.previousText = _previousOtherText;
+	}
+
+	// remember this word in case the next one also leans to the other layout
+	if (!doSwitch && lean > 0) {
+		bool otherVietnamese;
+		_previousLean = lean;
+		_previousOtherText = chooseText(other, vietnameseMode, otherVietnamese);
+	} else {
+		_previousLean = 0;
+	}
 
 	if (r.clean && !(r.vietnamese > 0 && !r.vietnameseChanged)) {
 		if (vietnamese) { if (_languageContext < AUTO_SWITCH_CONTEXT_MAX) _languageContext++; }

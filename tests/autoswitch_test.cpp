@@ -167,6 +167,20 @@ int main() {
 		check(r.switchLayout && r.text == u32("hello"), "English mode: still switches layout");
 	}
 
+	// --- Two short words that are each ambiguous switch together
+	{
+		AutoSwitch as;
+		AutoSwitchResult r1 = word(as, "an", Q, D);
+		AutoSwitchResult r2 = word(as, "all", Q, D);
+		check(!r1.switchLayout, "'an' alone is too ambiguous to switch");
+		check(r2.switchLayout && r2.replacePrevious && r2.previousText == u32("an") && r2.text == u32("all"),
+		      "'an all' typed QWERTY on Dvorak switches at the 2nd word and fixes both");
+		AutoSwitch as2;
+		word(as2, "an", Q, D);
+		as2.breakPair();
+		check(!word(as2, "all", Q, D).replacePrevious, "after enter/click the words are not fixed together");
+	}
+
 	// --- Early (mid-word) switch
 	{
 		auto earlyAt = [](const char* text, int typed, int active) {
