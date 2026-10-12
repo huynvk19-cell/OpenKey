@@ -22,6 +22,17 @@ jobs:
         g++ -std=c++17 -O1 -Wall -I Sources/OpenKey/engine tests/autoswitch_test.cpp Sources/OpenKey/engine/AutoSwitch.cpp -o autoswitch_test
         ./autoswitch_test
 
+    - name: AutoSwitch early guess benchmark (1000 samples)
+      run: |
+        g++ -std=c++17 -O2 -I Sources/OpenKey/engine tests/autoswitch_bench.cpp Sources/OpenKey/engine/AutoSwitch.cpp -o autoswitch_bench
+        ./autoswitch_bench 1000 2026 autoswitch_samples.csv
+
+    - name: Upload benchmark samples
+      uses: actions/upload-artifact@v4
+      with:
+        name: autoswitch-samples
+        path: autoswitch_samples.csv
+
   build:
     runs-on: windows-latest
     needs: test

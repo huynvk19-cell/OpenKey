@@ -201,6 +201,29 @@ int main() {
 		check(n >= 2 && n <= 4, "Dvorak 'keyboard' on QWERTY switches early, got " + std::to_string(n));
 		check(earlyAt("hello", Q, Q) == 0, "QWERTY 'hello' on QWERTY never switches early");
 		check(earlyAt("nguwowif", D, D) == 0, "Dvorak 'nguwowif' on Dvorak never switches early");
+		// Dvorak "w" is the QWERTY "," key: a word does not start with a comma
+		n = earlyAt("will", D, Q);
+		check(n == 2, "Dvorak 'will' on QWERTY switches at the 2nd key, got " + std::to_string(n));
+		n = earlyAt("she", D, Q);
+		check(n == 2, "Dvorak 'she' on QWERTY switches at the 2nd key, got " + std::to_string(n));
+		// QWERTY "re" reads "p." on Dvorak: "p" is not a finished word
+		n = earlyAt("ready", Q, D);
+		check(n == 2, "QWERTY 'ready' on Dvorak switches at the 2nd key, got " + std::to_string(n));
+		// in the middle of typing on the right layout, a typo does not switch at once
+		auto typoAt = [](const char* text, int layout) {
+			AutoSwitch as;
+			typeAs(as, "the", layout);
+			as.endWord(layout, true);
+			char buf[2] = { 0, 0 };
+			for (int i = 0; text[i]; i++) {
+				buf[0] = text[i];
+				typeAs(as, buf, layout);
+				if (as.checkEarly(layout) != AUTO_LAYOUT_UNKNOWN) return i + 1;
+			}
+			return 0;
+		};
+		check(typoAt("tje", Q) == 0, "typo 'tje' while typing QWERTY never switches early");
+		check(typoAt("qd", D) == 0, "typo 'qd' while typing Dvorak never switches early");
 		AutoSwitch as;
 		typeAs(as, "he", Q);
 		check(as.keyCount() == 2 && as.keyScanCode(0) == 0x23, "keys are kept for replay");

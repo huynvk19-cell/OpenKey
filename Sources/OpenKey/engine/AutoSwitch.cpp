@@ -351,15 +351,37 @@ void AutoSwitch::reset() {
 
 // Could the text typed so far (on one layout) still become a word?
 // > 0 = yes (best score of a word it could become), 0 = no, -1 = can not tell yet.
+static bool isOpening(char32_t c) {
+	return c == '\'' || c == '"' || c == '(' || c == '[' || c == '{' || c == '<' || c == '`';
+}
+
+// Score of a finished word (letters only), English or Vietnamese Telex.
+static int wordScore(const std::u32string& letters) {
+	int best = autoSwitchEnglishScore(letters);
+	std::u32string vietnamese;
+	std::string key;
+	if (autoSwitchTelex(letters, vietnamese, key)) {
+		int vn = autoSwitchVietnameseScore(key);
+		if (vn > best) best = vn;
+	}
+	return best;
+}
+
 static int couldStillBeWord(const std::u32string& all) {
+	if (all.empty()) return -1;
 	size_t start = 0;
-	if (!all.empty() && !isAsciiLetter(all[0])) start = 1; // one opening quote or bracket
+	if (!isAsciiLetter(all[0])) {
+		if (!isOpening(all[0])) return 0;          // a word does not start with , . ; / =
+		start = 1;                                  // one opening quote or bracket
+	}
 	size_t letters = 0, i = start;
 	while (i < all.size() && isAsciiLetter(all[i])) { i++; letters++; }
 	for (size_t j = i; j < all.size(); j++)
 		if (isAsciiLetter(all[j])) return 0;       // punctuation inside a word
 	if (all.size() - i >= 2) return 0;              // two or more symbols in a row
-	if (letters == 0) return start ? -1 : (all.size() >= 2 ? 0 : -1);
+	if (letters == 0) return start && all.size() == 1 ? -1 : 0;
+	if (i < all.size())                             // "word," : the word is already finished
+		return wordScore(all.substr(start, letters));
 	return autoSwitchPrefixScore(all.substr(start, letters));
 }
 
@@ -381,9 +403,16 @@ int AutoSwitch::checkEarly(int currentLayout) const {
 	if (otherScore == 0) return AUTO_LAYOUT_UNKNOWN;
 	// switch when the current reading is impossible, or only leads to rare
 	// words while the other one leads to common words
-	if (currentScore == 0) return otherLayout;
 	int strong = _confirmedWords > 0 ? _earlyStrong : _earlyStrongFirst;
 	int margin = _confirmedWords > 0 ? _earlyMargin : _earlyMarginFirst;
+	if (currentScore == 0) {
+		// right after a pause (maybe someone else sat down): switch at once.
+		// In the middle of typing on this layout it is more likely a typo or
+		// a name: wait for a third key and a common word on the other layout.
+		if (_confirmedWords == 0) return otherLayout;
+		if (_keys.size() >= 3 && otherScore >= strong) return otherLayout;
+		return AUTO_LAYOUT_UNKNOWN;
+	}
 	if (otherScore >= strong && otherScore - currentScore >= margin) return otherLayout;
 	return AUTO_LAYOUT_UNKNOWN;
 }
