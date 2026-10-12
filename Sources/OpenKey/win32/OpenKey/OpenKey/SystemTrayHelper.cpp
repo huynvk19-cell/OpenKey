@@ -163,9 +163,17 @@ void SystemTrayHelper::showMessage(LPCTSTR title, LPCTSTR text) {
 	Shell_NotifyIcon(NIM_MODIFY, &info);
 }
 
+extern bool vPausedForApp;
+extern wstring vPausedAppName;
+
 static void loadTrayIcon() {
 	int icon = 0;
-	if (vLanguage) {
+	if (vPausedForApp) { //Moonlight, UltraViewer...: keys go to the other computer untouched
+		icon = vUseGrayIcon ? IDI_ICON_STATUS_ENG_10 : IDI_ICON_STATUS_ENG;
+		wstring tip = _T("NhaKey: tạm nghỉ trong ") + vPausedAppName;
+		lstrcpyn(nid.szTip, tip.c_str(), 128);
+	}
+	else if (vLanguage) {
 		icon = vUseGrayIcon ? IDI_ICON_STATUS_VIET_10 : IDI_ICON_STATUS_VIET;
 		lstrcpyn(nid.szTip, _T("NhaKey: Tiếng Việt (bấm để tắt)"), 128);
 	}

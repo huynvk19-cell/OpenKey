@@ -2,7 +2,7 @@ name: Auto switch build
 
 on:
   push:
-    branches: [ "master", "auto-switch" ]
+    branches: [ "master", "auto-switch", "claude/optimistic-hypatia-dlfzkp" ]
   pull_request:
   workflow_dispatch:
 
@@ -41,7 +41,7 @@ jobs:
         path: Sources/OpenKey/win32/OpenKey/**/NhaKey64.exe
 
     - name: Publish download link
-      if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/auto-switch')
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/auto-switch' || github.ref == 'refs/heads/claude/optimistic-hypatia-dlfzkp')
       env:
         GH_TOKEN: ${{ github.token }}
       shell: bash
@@ -51,4 +51,4 @@ jobs:
         gh release delete auto-switch-latest --yes --cleanup-tag || true
         gh release create auto-switch-latest NhaKey64.exe \
           --title "NhaKey (latest)" \
-          --notes "Automatic QWERTY/Dvorak layout and English/Vietnamese switching. Built from ${GITHUB_SHA}."
+          --notes "Automatic QWERTY/Dvorak layout and English/Vietnamese switching, paused in Moonlight / UltraViewer. Built from ${GITHUB_SHA}."

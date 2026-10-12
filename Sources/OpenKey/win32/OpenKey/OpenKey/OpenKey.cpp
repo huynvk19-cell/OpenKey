@@ -698,15 +698,80 @@ static LRESULT passThroughKey(int nCode, WPARAM wParam, LPARAM lParam) {
 	return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 }
 
+//---------------------------------------------------------------- pause in remote desktop apps
+//Moonlight and UltraViewer send the keys to another computer, which has its own
+//keyboard settings: NhaKey leaves every key alone while one of them is in front
+static const wchar_t* _pauseApps[] = { L"moonlight", L"ultraviewer" };
+bool vPausedForApp = false;
+wstring vPausedAppName;
+static HWND _pauseCheckedWindow = NULL;
+
+static wstring ExeNameOf(HWND hWnd) {
+	DWORD pid = 0;
+	GetWindowThreadProcessId(hWnd, &pid);
+	wstring name;
+	HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid); //works for admin apps too
+	if (proc) {
+		WCHAR path[MAX_PATH];
+		DWORD size = MAX_PATH;
+		if (QueryFullProcessImageNameW(proc, 0, path, &size)) {
+			const WCHAR* slash = wcsrchr(path, L'\\');
+			name = slash ? slash + 1 : path;
+		}
+		CloseHandle(proc);
+	}
+	return name;
+}
+
+//the keys pressed outside NhaKey's sight: read them again
+static void RefreshModifierFlags() {
+	_flag &= ~(MASK_SHIFT | MASK_CONTROL | MASK_ALT | MASK_WIN | MASK_CAPITAL);
+	if (GetAsyncKeyState(VK_SHIFT) & 0x8000) _flag |= MASK_SHIFT;
+	if (GetAsyncKeyState(VK_CONTROL) & 0x8000) _flag |= MASK_CONTROL;
+	if (GetAsyncKeyState(VK_MENU) & 0x8000) _flag |= MASK_ALT;
+	if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000)) _flag |= MASK_WIN;
+	if (GetKeyState(VK_CAPITAL) & 1) _flag |= MASK_CAPITAL;
+	_lastFlag = 0;
+}
+
+//true while NhaKey must not touch any key (cheap: only looks again when the front window changes)
+static bool CheckPauseForApp() {
+	HWND hWnd = GetForegroundWindow();
+	if (hWnd == _pauseCheckedWindow)
+		return vPausedForApp;
+	_pauseCheckedWindow = hWnd;
+	wstring exe = hWnd ? ExeNameOf(hWnd) : wstring();
+	wstring lower = exe;
+	for (size_t i = 0; i < lower.size(); i++) lower[i] = towlower(lower[i]);
+	bool paused = false;
+	for (const wchar_t* app : _pauseApps)
+		if (lower.compare(0, wcslen(app), app) == 0)
+			paused = true;
+	if (paused != vPausedForApp) {
+		vPausedForApp = paused;
+		vPausedAppName = exe;
+		if (vPausedAppName.size() > 4 && lower.compare(lower.size() - 4, 4, L".exe") == 0)
+			vPausedAppName.resize(vPausedAppName.size() - 4);
+		//start clean on both sides of the pause
+		startNewSession();
+		_autoSwitch.reset();
+		_autoSwitch.invalidate();
+		_autoSwitch.breakPair();
+		_screenCount = 0;
+		_syncKey.clear();
+		RefreshModifierFlags();
+		SystemTrayHelper::updateData();
+	}
+	return vPausedForApp;
+}
+
+//---------------------------------------------------------------- keyboard layout
 static int LayoutOf(HKL hkl) {
 	UINT vk = MapVirtualKeyEx(0x1F, MAPVK_VSC_TO_VK, hkl); //the key right of A
 	if (vk == 'S') return AUTO_LAYOUT_QWERTY;
 	if (vk == 'O') return AUTO_LAYOUT_DVORAK;
 	return AUTO_LAYOUT_UNKNOWN;
 }
-
-static int _expectedLayout = AUTO_LAYOUT_UNKNOWN; //just requested, the app may not have switched yet
-static DWORD _expectedUntil = 0;
 
 //the window that receives typing (a text box inside the foreground window)
 static HWND GetFocusWindow() {
@@ -717,23 +782,50 @@ static HWND GetFocusWindow() {
 	return hWnd;
 }
 
-static int GetForegroundLayout(HKL* hklOut = NULL) {
-	HWND hWnd = GetFocusWindow();
-	HKL hkl = GetKeyboardLayout(GetWindowThreadProcessId(hWnd, NULL));
-	if (hklOut) *hklOut = hkl;
-	int layout = LayoutOf(hkl);
-	if (_expectedLayout != AUTO_LAYOUT_UNKNOWN) {
-		if (layout == _expectedLayout || GetTickCount() > _expectedUntil)
-			_expectedLayout = AUTO_LAYOUT_UNKNOWN;
-		else
-			return _expectedLayout;
+//US key code of a character, the same code the app would see on that layout
+static WORD VirtualKeyForChar(char32_t ch) {
+	if (ch >= 'a' && ch <= 'z') return (WORD)(ch - 'a' + 'A');
+	if (ch >= '0' && ch <= '9') return (WORD)ch;
+	switch (ch) {
+	case ';': return VK_OEM_1;
+	case '=': return VK_OEM_PLUS;
+	case ',': return VK_OEM_COMMA;
+	case '-': return VK_OEM_MINUS;
+	case '.': return VK_OEM_PERIOD;
+	case '/': return VK_OEM_2;
+	case '`': return VK_OEM_3;
+	case '[': return VK_OEM_4;
+	case '\\': return VK_OEM_5;
+	case ']': return VK_OEM_6;
+	case '\'': return VK_OEM_7;
 	}
-	return layout;
+	return 0;
 }
 
-static HKL SwitchForegroundLayout(int layout) {
-	HKL current;
-	GetForegroundLayout(&current);
+//NhaKey decides which layout the person is typing on (the wanted layout) and
+//asks Windows to switch too. But apps switch late (the first letters after a
+//switch came out on the old layout) or never (consoles, admin apps, some games).
+//So while the app is not on the wanted layout yet, NhaKey types every letter
+//itself: the switch is instant and works in every app.
+static int _wantedLayout = AUTO_LAYOUT_UNKNOWN;
+static int _lastAppLayout = AUTO_LAYOUT_UNKNOWN;
+static DWORD _lastFocusThread = 0;
+static bool _layoutTracked = false;
+static struct { int layout; DWORD time; } _layoutRequests[2] = { { AUTO_LAYOUT_UNKNOWN, 0 }, { AUTO_LAYOUT_UNKNOWN, 0 } };
+
+//did NhaKey ask for this layout a moment ago? (apps switch late, sometimes after the next request)
+static bool RecentlyRequested(int layout) {
+	for (auto& r : _layoutRequests)
+		if (r.layout == layout && GetTickCount() - r.time < 2000)
+			return true;
+	return false;
+}
+
+static DWORD WINAPI LayoutSwitchThread(LPVOID param) {
+	int layout = (int)(INT_PTR)param;
+	HWND focus = GetFocusWindow();
+	HWND top = GetForegroundWindow();
+	HKL current = GetKeyboardLayout(GetWindowThreadProcessId(focus, NULL));
 	HKL target = NULL;
 	HKL list[64];
 	int count = GetKeyboardLayoutList(64, list);
@@ -745,19 +837,50 @@ static HKL SwitchForegroundLayout(int layout) {
 	}
 	if (!target) //not installed: load US / US-Dvorak for this session
 		target = LoadKeyboardLayout(layout == AUTO_LAYOUT_DVORAK ? _T("00010409") : _T("00000409"), KLF_NOTELLSHELL);
-	if (target) {
-		//switch the app being typed in, and the system-wide input method so the
-		//language bar on the taskbar shows the new layout (session only, not saved)
-		HWND focus = GetFocusWindow();
-		HWND top = GetForegroundWindow();
-		PostMessage(focus, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
-		if (top != focus)
-			PostMessage(top, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
-		SystemParametersInfo(SPI_SETDEFAULTINPUTLANG, 0, &target, SPIF_SENDCHANGE);
-		_expectedLayout = layout;
-		_expectedUntil = GetTickCount() + 1500;
+	if (!target)
+		return 0;
+	//the app being typed in, and the system-wide input method so the language
+	//bar on the taskbar shows the new layout (session only, not saved)
+	PostMessage(focus, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
+	if (top != focus)
+		PostMessage(top, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)target);
+	SystemParametersInfo(SPI_SETDEFAULTINPUTLANG, 0, &target, SPIF_SENDCHANGE);
+	return 0;
+}
+
+//ask Windows to switch, away from the keyboard hook: a slow hook makes Windows drop keys
+static void RequestOsLayout(int layout) {
+	_layoutRequests[1] = _layoutRequests[0];
+	_layoutRequests[0] = { layout, GetTickCount() };
+	HANDLE thread = CreateThread(NULL, 0, LayoutSwitchThread, (LPVOID)(INT_PTR)layout, 0, NULL);
+	if (thread)
+		CloseHandle(thread);
+}
+
+static void SwitchLayout(int layout) {
+	_wantedLayout = layout;
+	RequestOsLayout(layout);
+}
+
+//the layout keys must be read with right now; appLayoutOut gets the one the app really has
+static int CurrentLayout(int* appLayoutOut = NULL) {
+	DWORD thread = GetWindowThreadProcessId(GetFocusWindow(), NULL);
+	int appLayout = LayoutOf(GetKeyboardLayout(thread));
+	if (appLayoutOut)
+		*appLayoutOut = appLayout;
+	if (!vAutoSwitchLayout || !_layoutTracked) {
+		_wantedLayout = appLayout;
+	} else if (thread == _lastFocusThread) {
+		//changed by hand (Win + Space, language bar): follow the person
+		if (appLayout != _lastAppLayout && appLayout != _wantedLayout && !RecentlyRequested(appLayout))
+			_wantedLayout = appLayout;
+	} else if (appLayout != _wantedLayout && appLayout != AUTO_LAYOUT_UNKNOWN && _wantedLayout != AUTO_LAYOUT_UNKNOWN) {
+		RequestOsLayout(_wantedLayout); //another window: bring the layout along
 	}
-	return target;
+	_layoutTracked = true;
+	_lastFocusThread = thread;
+	_lastAppLayout = appLayout;
+	return _wantedLayout;
 }
 
 static int _previousWordScreen = -1; //characters of the word before the last space, -1 = unknown
@@ -774,13 +897,13 @@ static void TypeText(const std::u32string& text) {
 //a word just ended: switch layout and/or retype the word. Returns true if the word was retyped.
 static bool HandleAutoSwitchWordEnd(bool endsWithSpace) {
 	autoSwitchSetModernOrthography(vUseModernOrthography != 0);
-	AutoSwitchResult result = _autoSwitch.endWord(GetForegroundLayout(),
+	AutoSwitchResult result = _autoSwitch.endWord(CurrentLayout(),
 		vLanguage == 1 && vAutoSwitchLanguage && vCodeTable == 0,
 		vAutoSwitchLayout != 0);
 	if (!endsWithSpace)
 		_autoSwitch.breakPair();
 	if (result.switchLayout)
-		SwitchForegroundLayout(result.layout);
+		SwitchLayout(result.layout);
 	int wordScreen = _screenCount;
 	if (!result.replace || _screenCount <= 0 || _screenCount > 64) {
 		_previousWordScreen = endsWithSpace && wordScreen > 0 && wordScreen <= 64 ? wordScreen : -1;
@@ -807,7 +930,6 @@ static bool HandleAutoSwitchWordEnd(bool endsWithSpace) {
 #define AUTO_REPLAY_TAG 0x4E4B5250
 struct ReplayKey { UINT scanCode; bool shift; bool caps; };
 static vector<ReplayKey> _replayQueue;
-static int _replayLayout = AUTO_LAYOUT_UNKNOWN;
 
 static void ReplayWordOnLayout(int layout) {
 	vector<ReplayKey> keys;
@@ -825,14 +947,13 @@ static void ReplayWordOnLayout(int layout) {
 	_autoSwitch.breakPair();
 	_autoSwitch.setLanguageContext(0); //probably a different person typing now
 
-	HKL hkl = SwitchForegroundLayout(layout);
-	_replayLayout = layout;
+	SwitchLayout(layout);
 	vector<INPUT> inputs;
 	for (const ReplayKey& k : keys) {
 		_replayQueue.push_back(k);
 		INPUT in = {};
 		in.type = INPUT_KEYBOARD;
-		in.ki.wVk = (WORD)MapVirtualKeyEx(k.scanCode, MAPVK_VSC_TO_VK, hkl);
+		in.ki.wVk = VirtualKeyForChar(autoSwitchCharFor(k.scanCode, false, false, layout));
 		in.ki.wScan = (WORD)k.scanCode;
 		in.ki.dwExtraInfo = AUTO_REPLAY_TAG;
 		inputs.push_back(in);
@@ -845,17 +966,22 @@ static void ReplayWordOnLayout(int layout) {
 
 LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	KBDLLHOOKSTRUCT* data = (KBDLLHOOKSTRUCT*)lParam;
-	bool replayed = nCode >= 0 && data->dwExtraInfo == AUTO_REPLAY_TAG;
-	KBDLLHOOKSTRUCT copy;
+	if (nCode < 0)
+		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+	bool replayed = data->dwExtraInfo == AUTO_REPLAY_TAG;
+	//Moonlight, UltraViewer...: every key goes to the other computer untouched
+	if (!replayed && data->dwExtraInfo == 0 && CheckPauseForApp())
+		return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
+
+	KBDLLHOOKSTRUCT copy = *data;
 	if (replayed) { //let OpenKey handle it like a real key
 		if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
 			return 1;
-		copy = *data;
 		copy.dwExtraInfo = 0;
 		data = &copy;
 		lParam = (LPARAM)&copy;
 	}
-	if (nCode < 0 || data->dwExtraInfo != 0 || (!vAutoSwitchLayout && !vAutoSwitchLanguage))
+	if (data->dwExtraInfo != 0 || (!vAutoSwitchLayout && !vAutoSwitchLanguage))
 		return keyboardHookProcessCore(nCode, wParam, lParam);
 	if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN)
 		return keyboardHookProcessCore(nCode, wParam, lParam);
@@ -912,11 +1038,29 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	}
 	_autoSwitch.pushKey(data->scanCode, shift, caps);
 
+	int appLayout = AUTO_LAYOUT_UNKNOWN;
+	int layout = CurrentLayout(&appLayout);
 	if (!replayed && vAutoSwitchLayout) {
-		int target = _autoSwitch.checkEarly(GetForegroundLayout());
+		int target = _autoSwitch.checkEarly(layout);
 		if (target != AUTO_LAYOUT_UNKNOWN) {
 			ReplayWordOnLayout(target); //includes this key
 			return 1;
+		}
+	}
+
+	//the app is not on the wanted layout (yet): give OpenKey the key of the
+	//wanted layout, and type the character ourselves if it passes through
+	bool translate = layout != AUTO_LAYOUT_UNKNOWN &&
+		(replayed || (appLayout != AUTO_LAYOUT_UNKNOWN && appLayout != layout));
+	if (translate) {
+		WORD translatedVk = VirtualKeyForChar(autoSwitchCharFor(data->scanCode, false, false, layout));
+		if (translatedVk) {
+			copy.vkCode = translatedVk;
+			copy.dwExtraInfo = 0;
+			data = &copy;
+			lParam = (LPARAM)&copy;
+		} else {
+			translate = false;
 		}
 	}
 
@@ -925,8 +1069,8 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	if (replayed)
 		_flag = savedFlag;
 	if (_passedThrough) {
-		if (replayed) { //type the character of the new layout ourselves
-			char32_t ch = autoSwitchCharFor(data->scanCode, shift, caps, _replayLayout);
+		if (translate) {
+			char32_t ch = autoSwitchCharFor(data->scanCode, shift, caps, layout);
 			if (ch) {
 				prepareUnicodeEvent(keyEvent[0], (Uint16)ch, true);
 				prepareUnicodeEvent(keyEvent[1], (Uint16)ch, false);
@@ -934,6 +1078,8 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 			}
 			return 1;
 		}
+		if (replayed)
+			return 1;
 		_screenCount++; //the key itself reaches the app
 	}
 	return result;
@@ -966,6 +1112,7 @@ LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 
 VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {
 	_autoSwitch.invalidate();
+	CheckPauseForApp(); //pause / resume right away, so the tray icon shows it
 	//smart switch key
 	if (vUseSmartSwitchKey || vRememberCode) {
 		string& exe = OpenKeyHelper::getFrontMostAppExecuteName();
