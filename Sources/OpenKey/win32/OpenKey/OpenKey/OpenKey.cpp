@@ -279,6 +279,13 @@ static bool checkForegroundApp() {
 	if (_isPausedInApp)
 		return true;
 
+	//typing app names in the excluded apps box of OpenKey itself
+	if (pid == GetCurrentProcessId()) {
+		HWND focus = GetFocus();
+		if (focus && GetDlgCtrlID(focus) == IDC_EDIT_EXCLUDED_APPS)
+			return true;
+	}
+
 	checkKeyboardLayout(GetKeyboardLayout(threadId));
 	if (!_isLatinLayout)
 		return true;
@@ -334,13 +341,33 @@ static void SendCombineKey(const Uint16& key1, const Uint16& key2, const DWORD& 
 	SendInput(1, keyEvent, sizeof(INPUT));
 }
 
-static void SendKeyCode(Uint32 data) {
+/**
+ * Character of a key the user really pressed, using the keyboard layout of the front app,
+ * so punctuation keys are restored correctly on non-US layouts (German, French,...).
+ * Macro data is built from text with US key codes, so it must not use this function.
+ */
+static Uint16 keyCodeToLayoutCharacter(const Uint32& data) {
+	Uint16 vk = (Uint16)(data & 0xFF);
+	if ((vk >= 'A' && vk <= 'Z') || vk == KEY_SPACE || keyCodeToCharacter(data) == 0)
+		return keyCodeToCharacter(data);
+	BYTE keyState[256] = { 0 };
+	if (data & CAPS_MASK)
+		keyState[VK_SHIFT] = 0x80;
+	WCHAR buffer[4];
+	//flag 0x4: don't change keyboard state (dead keys) on Windows 10 1607+
+	int count = ToUnicodeEx(vk, MapVirtualKeyEx(vk, MAPVK_VK_TO_VSC, _currentLayout), keyState, buffer, 4, 0x4, _currentLayout);
+	if (count == 1 && buffer[0] >= 0x20)
+		return buffer[0];
+	return keyCodeToCharacter(data);
+}
+
+static void SendKeyCode(Uint32 data, const bool& dataFromMacro = false) {
 	_newChar = (Uint16)data;
 	if (!(data & CHAR_CODE_MASK)) {
 		if (IS_DOUBLE_CODE(vCodeTable)) //VNI
 			InsertKeyLength(1);
 
-		_newChar = keyCodeToCharacter(data);
+		_newChar = dataFromMacro ? keyCodeToCharacter(data) : keyCodeToLayoutCharacter(data);
 		if (_newChar == 0) {
 			_newChar = (Uint16)data;
 			prepareKeyEvent(keyEvent[0], _newChar, true);
@@ -446,7 +473,7 @@ static void SendNewCharString(const bool& dataFromMacro = false) {
 			} else if (!(_tempChar & CHAR_CODE_MASK)) {
 				if (IS_DOUBLE_CODE(vCodeTable)) //VNI
 					InsertKeyLength(1);
-				_newCharString[_j++] = keyCodeToCharacter(_tempChar);
+				_newCharString[_j++] = dataFromMacro ? keyCodeToCharacter(_tempChar) : keyCodeToLayoutCharacter(_tempChar);
 			} else {
 				_newChar = _tempChar;
 				if (vCodeTable == 0) {  //unicode 2 bytes code
@@ -485,7 +512,7 @@ static void SendNewCharString(const bool& dataFromMacro = false) {
 	if (pData->code == vRestore || pData->code == vRestoreAndStartNewSession) { //if is restore
 		if (keyCodeToCharacter(_keycode) != 0) {
 			_newCharSize++;
-			_newCharString[_j++] = keyCodeToCharacter(_keycode | ((_flag & MASK_SHIFT) || (_flag & MASK_CAPITAL) ? CAPS_MASK : 0));
+			_newCharString[_j++] = keyCodeToLayoutCharacter(_keycode | ((_flag & MASK_SHIFT) || (_flag & MASK_CAPITAL) ? CAPS_MASK : 0));
 		} else {
 			_willSendControlKey = true;
 		}
@@ -541,7 +568,7 @@ void switchLanguage() {
 
 static void SendPureCharacter(const Uint16& ch) {
 	if (ch < 128)
-		SendKeyCode(ch);
+		SendKeyCode(ch, true);
 	else {
 		prepareUnicodeEvent(keyEvent[0], ch, true);
 		prepareUnicodeEvent(keyEvent[1], ch, false);
@@ -573,7 +600,7 @@ static void handleMacro() {
 			if (pData->macroData[i] & PURE_CHARACTER_MASK) {
 				SendPureCharacter(pData->macroData[i]);
 			} else {
-				SendKeyCode(pData->macroData[i]);
+				SendKeyCode(pData->macroData[i], true);
 			}
 		}
 	}
