@@ -27,11 +27,20 @@ jobs:
         g++ -std=c++17 -O2 -I Sources/OpenKey/engine tests/autoswitch_bench.cpp Sources/OpenKey/engine/AutoSwitch.cpp -o autoswitch_bench
         ./autoswitch_bench 1000 2026 autoswitch_samples.csv
 
+    - name: Vietnamese typing simulation (OpenKey engine + NhaKey, 1000 sentences per scenario)
+      run: |
+        E=Sources/OpenKey/engine
+        g++ -std=c++17 -O2 -DLINUX -include algorithm -I $E tests/vietnamese_sim.cpp $E/AutoSwitch.cpp $E/Engine.cpp \
+          $E/Vietnamese.cpp $E/Macro.cpp $E/SmartSwitchKey.cpp $E/ConvertTool.cpp -o vietnamese_sim
+        ./vietnamese_sim 1000 2026 vietnamese_samples.csv
+
     - name: Upload benchmark samples
       uses: actions/upload-artifact@v4
       with:
         name: autoswitch-samples
-        path: autoswitch_samples.csv
+        path: |
+          autoswitch_samples.csv
+          vietnamese_samples.csv
 
   build:
     runs-on: windows-latest

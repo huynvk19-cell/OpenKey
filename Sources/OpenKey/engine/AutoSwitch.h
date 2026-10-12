@@ -44,7 +44,7 @@ public:
 	// (backspace, arrow keys, mouse click, shortcut...).
 	void invalidate();
 	// The words are no longer side by side (enter, tab, click...).
-	void breakPair() { _previousLean = 0; }
+	void breakPair() { _previousLean = 0; _previousKeys.clear(); }
 	// Forget the current word (start of a new word).
 	void reset();
 	bool hasWord() const { return !_keys.empty(); }
@@ -62,6 +62,15 @@ public:
 	// The word ended (space, enter, tab). Decide what to do, then reset.
 	AutoSwitchResult endWord(int currentLayout, bool vietnameseMode, bool allowLayoutSwitch = true);
 
+	// Switching to `layout` in the middle of a word: the word before (typed
+	// right after a pause, before the layout was confirmed) was most likely
+	// typed on `layout` too. Returns true and its text if it should be retyped.
+	bool previousWordFix(int layout, bool vietnameseMode, std::u32string& text) const;
+	// The platform switched from `fromLayout` in the middle of this word (and
+	// replayed its keys). If the word ends up being no word at all on the new
+	// layout, endWord switches back and retypes what was typed.
+	void markEarlySwitch(int fromLayout) { _earlyFrom = fromLayout; }
+
 	// Recent language: > 0 means recent words were Vietnamese, < 0 English.
 	int languageContext() const { return _languageContext; }
 	void setLanguageContext(int value) { _languageContext = value; }
@@ -74,6 +83,10 @@ private:
 	int _confirmedWords = 0; // words just typed correctly on the current layout
 	int _previousLean = 0;   // how much better the last word read on the other layout
 	std::u32string _previousOtherText;
+	std::vector<Key> _previousKeys; // the word before (a switch may fix it too)
+	bool _previousConfirmed = false; // the layout was confirmed when it was typed
+	int _earlyFrom = AUTO_LAYOUT_UNKNOWN; // switched from this layout in the middle of the word
+	int _previousScore = 0;
 	std::u32string chooseText(const AutoSwitchReading& r, bool vietnameseMode, bool& vietnamese) const;
 public:
 	// Nobody typed for a while: maybe someone else sat down, so the next

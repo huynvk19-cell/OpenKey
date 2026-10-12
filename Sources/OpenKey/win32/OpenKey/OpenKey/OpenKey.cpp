@@ -937,15 +937,25 @@ static void ReplayWordOnLayout(int layout) {
 	for (size_t i = 0; i < _autoSwitch.keyCount(); i++)
 		keys.push_back({ _autoSwitch.keyScanCode(i), _autoSwitch.keyShift(i), caps });
 
-	//delete what is on screen for this word
+	//delete what is on screen for this word, and the word before if it was typed on the new layout too
 	int deleteCount = _screenCount > 0 && _screenCount <= 64 ? _screenCount : 0;
+	std::u32string previousText;
+	bool fixPrevious = _previousWordScreen > 0 && _autoSwitch.previousWordFix(layout, vLanguage == 1 && vCodeTable == 0, previousText);
+	if (fixPrevious)
+		deleteCount += _previousWordScreen + 1;
 	for (int i = 0; i < deleteCount; i++)
 		SendInput(2, backspaceEvent, sizeof(INPUT));
+	if (fixPrevious) {
+		TypeText(previousText);
+		TypeText(U" ");
+	}
+	_previousWordScreen = -1;
 	_screenCount = 0;
 	startNewSession();
 	_autoSwitch.reset();
 	_autoSwitch.breakPair();
 	_autoSwitch.setLanguageContext(0); //probably a different person typing now
+	_autoSwitch.markEarlySwitch(CurrentLayout()); //goes back at the end of the word if this makes it no word
 
 	SwitchLayout(layout);
 	vector<INPUT> inputs;
@@ -996,19 +1006,28 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	case VK_LCONTROL: case VK_RCONTROL: case VK_CONTROL:
 	case VK_LMENU: case VK_RMENU: case VK_MENU: case VK_LWIN: case VK_RWIN:
 		return keyboardHookProcessCore(nCode, wParam, lParam);
-	case VK_SPACE: case VK_RETURN: case VK_TAB:
-		if (!shortcut && _autoSwitch.hasWord() && HandleAutoSwitchWordEnd(vk == VK_SPACE)) {
+	case VK_SPACE: case VK_RETURN: case VK_TAB: {
+		bool hadWord = _autoSwitch.hasWord();
+		if (!shortcut && hadWord && HandleAutoSwitchWordEnd(vk == VK_SPACE)) {
 			_autoSwitch.reset();
 			_screenCount = 0;
 			return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam); //type the space itself
 		}
-		if (!_autoSwitch.hasWord()) { //two spaces, enter on an empty line...
+		if (!hadWord) { //two spaces, enter on an empty line...
 			_autoSwitch.breakPair();
 			_previousWordScreen = -1;
 		}
 		_autoSwitch.reset();
 		_screenCount = 0;
-		return keyboardHookProcessCore(nCode, wParam, lParam);
+		LRESULT result = keyboardHookProcessCore(nCode, wParam, lParam);
+		//OpenKey may rewrite the word at the space (spelling restore): keep its length right
+		if (_previousWordScreen > 0)
+			_previousWordScreen += _screenCount;
+		if (_previousWordScreen <= 0 || _previousWordScreen > 64)
+			_previousWordScreen = -1;
+		_screenCount = 0;
+		return result;
+	}
 	}
 
 	if (!replayed && (shortcut || (data->flags & LLKHF_EXTENDED) || !autoSwitchIsTrackedKey(data->scanCode))) {

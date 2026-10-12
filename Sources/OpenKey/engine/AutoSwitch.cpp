@@ -10,12 +10,19 @@ Released under GPL license, like the rest of OpenKey.
 #include "AutoSwitchData.h"
 
 #include <cstring>
+#include <set>
 
 // Minimum score (zipf * 10) for the other layout's reading to be trusted.
 #define AUTO_SWITCH_MIN_OTHER_SCORE 30
 // Bonus given to the language of the recent words when a word is valid in both.
 #define AUTO_SWITCH_CONTEXT_BONUS 15
 #define AUTO_SWITCH_CONTEXT_MAX 3
+// In Vietnamese mode English readings count this much less (zipf * 10).
+#define AUTO_SWITCH_ENGLISH_PENALTY 15
+// A real Vietnamese syllable that is not in the word list (rare word, name).
+#define AUTO_SWITCH_RARE_VIETNAMESE 20
+// Mid-typing, a word that is no word switches only to a word at least this common.
+#define AUTO_SWITCH_TYPO_SCORE 50
 
 // ---------------------------------------------------------------- layouts
 // Scan code set 1, rows: number row 0x02-0x0D, top 0x10-0x1B,
@@ -252,8 +259,108 @@ int autoSwitchEnglishScore(const std::u32string& word) {
 	return lookup(kEnglishWords, kEnglishWordsCount, lower);
 }
 
+// ---------------------------------------------------------------- Vietnamese syllable structure
+// The word list only has the common syllables. Names and rare words are still
+// real Vietnamese: a syllable is valid when it is an initial consonant plus a
+// rhyme (with its tone) that Vietnamese uses, spelled the Vietnamese way.
+static const char* kVnOnsets[] = { "ngh", "ng", "nh", "ch", "gh", "gi", "kh", "ph", "qu", "th", "tr",
+	"b", "c", "d", "\xC4\x91", "g", "h", "k", "l", "m", "n", "p", "r", "s", "t", "v", "x" };
+
+static char32_t firstChar(const std::string& utf8) {
+	const unsigned char* p = (const unsigned char*)utf8.c_str();
+	if (*p < 0x80) return *p;
+	if ((*p & 0xE0) == 0xC0) return ((p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+	return ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+}
+
+// c/k, g/gh, ng/ngh, qu: which letters may follow
+static bool vnSpellingOk(const std::string& onset, char32_t vowel) {
+	bool front = vowel == 'e' || vowel == U'\u00EA' || vowel == 'i' || vowel == 'y';
+	bool frontE = vowel == 'e' || vowel == U'\u00EA' || vowel == 'i';
+	if (onset == "c") return !front;
+	if (onset == "k") return front;
+	if (onset == "g") return vowel != 'e' && vowel != U'\u00EA';
+	if (onset == "gh" || onset == "ngh") return frontE;
+	if (onset == "ng") return !frontE;
+	if (onset == "gi") return vowel != 'i';
+	if (onset == "qu") return vowel != 'u' && vowel != U'\u01B0' && vowel != 'o' && vowel != U'\u00F4' && vowel != U'\u01A1';
+	return true;
+}
+
+struct VnStructure {
+	std::set<std::string> rhymes;       // "anh1": rhyme with marks and tone digit
+	std::set<std::string> plainPrefixes; // every prefix of a rhyme without marks ("u", "uy", "uye", "uyen")
+	VnStructure() {
+		for (int i = 0; i < kVietnameseSyllablesCount; i++) {
+			std::string key = kVietnameseSyllables[i].word;
+			for (const char* o : kVnOnsets) {
+				size_t n = strlen(o);
+				if (key.compare(0, n, o) != 0 || !isVowel(firstChar(key.substr(n)))) continue;
+				addRhyme(key.substr(n));
+				break;
+			}
+			if (isVowel(firstChar(key))) addRhyme(key);
+		}
+	}
+	void addRhyme(const std::string& rhyme) {
+		rhymes.insert(rhyme);
+		std::u32string letters = u32FromUtf8(rhyme.substr(0, rhyme.size() - 1));
+		std::string plain;
+		for (char32_t c : letters) plain += (char)plainOf(c);
+		for (size_t n = 1; n <= plain.size(); n++) plainPrefixes.insert(plain.substr(0, n));
+	}
+	static std::u32string u32FromUtf8(const std::string& s) {
+		std::u32string out;
+		for (size_t i = 0; i < s.size();) {
+			unsigned char c = s[i];
+			if (c < 0x80) { out += c; i++; }
+			else if ((c & 0xE0) == 0xC0) { out += ((c & 0x1F) << 6) | (s[i + 1] & 0x3F); i += 2; }
+			else { out += ((c & 0x0F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F); i += 3; }
+		}
+		return out;
+	}
+};
+
+static const VnStructure& vnStructure() {
+	static VnStructure structure;
+	return structure;
+}
+
+// "<letters><tone digit>" is a Vietnamese syllable, even if it is not in the word list
+static bool vnSyllableValid(const std::string& key) {
+	const VnStructure& vs = vnStructure();
+	if (vs.rhymes.count(key) && isVowel(firstChar(key))) return true;
+	for (const char* o : kVnOnsets) {
+		size_t n = strlen(o);
+		if (key.compare(0, n, o) != 0) continue;
+		std::string rhyme = key.substr(n);
+		if (vs.rhymes.count(rhyme) && vnSpellingOk(o, firstChar(rhyme))) return true;
+	}
+	return false;
+}
+
+// plain letters ("nghuy") can still grow into a Vietnamese syllable
+static bool vnPlainPrefixValid(const std::string& plain) {
+	const VnStructure& vs = vnStructure();
+	if (vs.plainPrefixes.count(plain)) return true;
+	for (const char* o : kVnOnsets) {
+		std::string onset = o;
+		if (onset == "\xC4\x91") continue; // plain letters have d for d-stroke
+		if (plain.size() <= onset.size()) {
+			if (onset.compare(0, plain.size(), plain) == 0) return true; // still typing the consonant
+			continue;
+		}
+		if (plain.compare(0, onset.size(), onset) != 0) continue;
+		std::string rest = plain.substr(onset.size());
+		if (vs.plainPrefixes.count(rest) && vnSpellingOk(onset, (char32_t)rest[0])) return true;
+	}
+	return false;
+}
+
 int autoSwitchVietnameseScore(const std::string& key) {
-	return lookup(kVietnameseSyllables, kVietnameseSyllablesCount, key);
+	int score = lookup(kVietnameseSyllables, kVietnameseSyllablesCount, key);
+	if (score == 0 && vnSyllableValid(key)) score = AUTO_SWITCH_RARE_VIETNAMESE;
+	return score;
 }
 
 static bool startsWith(const char* word, const std::string& prefix) {
@@ -295,6 +402,7 @@ int autoSwitchPrefixScore(const std::u32string& letters) {
 		plain += (char)asciiLower(p);
 	}
 	int vn = prefixScore(kVietnamesePlain, kVietnamesePlainCount, plain);
+	if (vn == 0 && vnPlainPrefixValid(plain)) vn = AUTO_SWITCH_RARE_VIETNAMESE;
 	return vn > best ? vn : best;
 }
 
@@ -342,7 +450,30 @@ void AutoSwitch::pushKey(unsigned int scanCode, bool shift, bool capsLock) {
 	_keys.push_back({ scanCode, shift, capsLock });
 }
 
-void AutoSwitch::invalidate() { _valid = false; _previousLean = 0; }
+void AutoSwitch::invalidate() { _valid = false; _previousLean = 0; _previousKeys.clear(); }
+
+// How good a reading is. Typing Vietnamese comes first: in Vietnamese mode a
+// rare English word ("pag", "yr") must not keep the wrong layout when the other
+// reading is a real Vietnamese word, so English counts a bit less there.
+static int readingScore(const Reading& r, bool vietnameseMode) {
+	if (!r.clean) return 0;
+	if (!vietnameseMode) return r.score();
+	int english = r.english - AUTO_SWITCH_ENGLISH_PENALTY;
+	return r.vietnamese > english ? r.vietnamese : (english > 0 ? english : 0);
+}
+
+bool AutoSwitch::previousWordFix(int layout, bool vietnameseMode, std::u32string& text) const {
+	if (_previousKeys.empty()) return false;
+	Reading r = readAs(_previousKeys, layout);
+	if (!r.clean || !r.prefix.empty() || r.suffix.size() > 1) return false;
+	int score = readingScore(r, vietnameseMode);
+	// right after a pause the layout was not confirmed yet: any word will do.
+	// Otherwise (someone else sat down without a pause) only a clearly better word.
+	if (score <= 0 || (_previousConfirmed && score < _previousScore + AUTO_SWITCH_CONTEXT_BONUS)) return false;
+	bool vietnamese;
+	text = chooseText(r, vietnameseMode, vietnamese);
+	return true;
+}
 
 void AutoSwitch::reset() {
 	_keys.clear();
@@ -351,6 +482,12 @@ void AutoSwitch::reset() {
 
 // Could the text typed so far (on one layout) still become a word?
 // > 0 = yes (best score of a word it could become), 0 = no, -1 = can not tell yet.
+static bool isClosing(char32_t c) {
+	// not ';': it is the Dvorak "s" (the sac tone) typed on QWERTY
+	return c == ',' || c == '.' || c == ':' || c == '!' || c == '?' || c == ')' || c == ']' ||
+		c == '}' || c == '\'' || c == '"' || c == '>';
+}
+
 static bool isOpening(char32_t c) {
 	return c == '\'' || c == '"' || c == '(' || c == '[' || c == '{' || c == '<' || c == '`';
 }
@@ -405,12 +542,13 @@ int AutoSwitch::checkEarly(int currentLayout) const {
 	// words while the other one leads to common words
 	int strong = _confirmedWords > 0 ? _earlyStrong : _earlyStrongFirst;
 	int margin = _confirmedWords > 0 ? _earlyMargin : _earlyMarginFirst;
+	// in the middle of typing on this layout, 2 keys are too few to tell a typo from a new person
+	if (_confirmedWords > 0 && _keys.size() < 3) return AUTO_LAYOUT_UNKNOWN;
 	if (currentScore == 0) {
 		// right after a pause (maybe someone else sat down): switch at once.
 		// In the middle of typing on this layout it is more likely a typo or
 		// a name: wait for a third key and a common word on the other layout.
-		if (_confirmedWords == 0) return otherLayout;
-		if (_keys.size() >= 3 && otherScore >= strong) return otherLayout;
+		if (_confirmedWords == 0 || otherScore >= strong) return otherLayout;
 		return AUTO_LAYOUT_UNKNOWN;
 	}
 	if (otherScore >= strong && otherScore - currentScore >= margin) return otherLayout;
@@ -419,25 +557,19 @@ int AutoSwitch::checkEarly(int currentLayout) const {
 
 // The word as it should appear for one reading (English or Vietnamese).
 std::u32string AutoSwitch::chooseText(const Reading& r, bool vietnameseMode, bool& vietnamese) const {
-	vietnamese = false;
-	if (r.clean && r.vietnamese > 0 && vietnameseMode) {
-		if (!r.vietnameseChanged) {
-			vietnamese = true; // same letters either way
-		} else if (r.english == 0) {
-			vietnamese = true;
-		} else {
-			int en = r.english + (_languageContext < 0 ? AUTO_SWITCH_CONTEXT_BONUS : 0);
-			int vn = r.vietnamese + (_languageContext > 0 ? AUTO_SWITCH_CONTEXT_BONUS : 0);
-			vietnamese = vn > en;
-		}
-	}
+	// Vietnamese mode: a valid Vietnamese word always stays Vietnamese ("as" is a-acute).
+	// English words that are not Vietnamese are restored by OpenKey's own spell check.
+	vietnamese = r.clean && r.vietnamese > 0 && vietnameseMode;
 	return r.clean ? r.prefix + (vietnamese ? r.vietnameseText : r.core) + r.suffix : r.all;
 }
 
 AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, bool allowLayoutSwitch) {
 	AutoSwitchResult result;
+	int earlyFrom = _earlyFrom;
+	_earlyFrom = AUTO_LAYOUT_UNKNOWN;
 	if (!_valid || _keys.empty() || currentLayout == AUTO_LAYOUT_UNKNOWN) {
 		_previousLean = 0;
+		_previousKeys.clear();
 		reset();
 		return result;
 	}
@@ -448,24 +580,39 @@ AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, boo
 	// At the end of a word, switch when the other reading is a real word made
 	// only of letters and the current one is not a word, has stray symbols
 	// (",ao" for "was"), or is a much rarer word ("yr" for "to").
-	bool otherPlain = other.clean && other.prefix.empty() && other.suffix.size() <= 1 && other.core.size() >= 2;
-	bool currentHasSymbols = !current.prefix.empty() || !current.suffix.empty() || !current.clean;
-	int currentScore = currentHasSymbols ? 0 : current.score();
-	int lean = (allowLayoutSwitch && otherPlain && other.score() >= AUTO_SWITCH_MIN_OTHER_SCORE)
-	           ? other.score() - currentScore : 0;
-	bool doSwitch = lean > 0 && (currentScore == 0 || (other.score() >= _endStrong && lean >= _endMargin));
+	bool otherPlain = other.clean && other.prefix.empty() && other.core.size() >= 2 &&
+		(other.suffix.empty() || (other.suffix.size() == 1 && isClosing(other.suffix[0])));
+	// "nam," "(ok" are normal: one closing punctuation mark or one opening quote / bracket
+	bool currentHasSymbols = !current.clean || current.prefix.size() > 1 || current.suffix.size() > 1 ||
+		(!current.prefix.empty() && !isOpening(current.prefix[0])) ||
+		(!current.suffix.empty() && !isClosing(current.suffix[0]));
+	int currentScore = currentHasSymbols ? 0 : readingScore(current, vietnameseMode);
+	int otherScore = readingScore(other, vietnameseMode);
+	// English counts less only against a real word: next to gibberish it counts in full
+	if (currentScore == 0 && other.clean && other.score() > otherScore) otherScore = other.score();
+	int lean = (allowLayoutSwitch && otherPlain && otherScore >= AUTO_SWITCH_MIN_OTHER_SCORE)
+	           ? otherScore - currentScore : 0;
+	// Typing on this layout for a while: a word that is not a word is more likely
+	// a typo or a name than someone else typing, so ask for a common word.
+	int needed = _confirmedWords > 0 && current.clean ? AUTO_SWITCH_TYPO_SCORE : AUTO_SWITCH_MIN_OTHER_SCORE;
+	bool doSwitch = lean > 0 && (currentScore == 0 ? otherScore >= needed : (otherScore >= _endStrong && lean >= _endMargin));
+	// The switch in the middle of this word made it no word at all (a typo or a
+	// name on the right layout): go back and retype what was typed.
+	bool revert = !doSwitch && allowLayoutSwitch && earlyFrom == otherLayout && readingScore(current, vietnameseMode) == 0;
+	if (revert) doSwitch = true;
 	// Two words in a row that both read better on the other layout ("an all"):
 	// switch and fix both words.
 	bool fixPrevious = false;
-	if (!doSwitch && lean > 0 && _previousLean > 0 && lean + _previousLean >= _pairMargin) {
+	if (!doSwitch && !revert && lean > 0 && _previousLean > 0 && lean + _previousLean >= _pairMargin) {
 		doSwitch = true;
 		fixPrevious = true;
 	}
 
 	const Reading& r = doSwitch ? other : current;
-	if (doSwitch) _languageContext = 0; // probably a different person typing now
-	if (doSwitch) _confirmedWords = 0;
-	else if (current.score() > 0 && _confirmedWords < 100) _confirmedWords++;
+	bool layoutWasConfirmed = _confirmedWords > 0;
+	if (doSwitch && !revert) _languageContext = 0; // probably a different person typing now
+	if (doSwitch && !revert) _confirmedWords = 0;
+	else if (currentScore >= AUTO_SWITCH_MIN_OTHER_SCORE && _confirmedWords < 100) _confirmedWords++;
 
 	bool vietnamese = false;
 	result.text = chooseText(r, vietnameseMode, vietnamese);
@@ -478,6 +625,15 @@ AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, boo
 	if (fixPrevious) {
 		result.replacePrevious = true;
 		result.previousText = _previousOtherText;
+	} else if (doSwitch && !revert && previousWordFix(otherLayout, vietnameseMode, result.previousText)) {
+		result.replacePrevious = true; // the word before was typed on the new layout too
+	}
+	// keep this word: a switch on the next word may fix it too
+	_previousKeys.clear();
+	if (!doSwitch) {
+		for (const Key& k : _keys) _previousKeys.push_back(k);
+		_previousConfirmed = layoutWasConfirmed;
+		_previousScore = currentScore;
 	}
 
 	// remember this word in case the next one also leans to the other layout

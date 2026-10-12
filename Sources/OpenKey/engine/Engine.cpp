@@ -1505,7 +1505,8 @@ void vKeyHandleEvent(const vKeyEvent& event,
             if (hCode == vDoNothing) {
                 checkGrammar(-1);
             } else {
-                checkGrammar(0);
+                //a character added by this key (standalone w -> u-horn) is not on screen yet
+                checkGrammar(hNCC > hBPC ? hBPC - hNCC : 0);
             }
         }
         

@@ -94,13 +94,13 @@ int main() {
 		r = word(as, "vieetj", Q, Q);
 		check(!r.replace && r.vietnamese && r.text == u32("việt"), "vieetj on QWERTY: Vietnamese, no retype");
 	}
-	// --- English words that are also Telex
+	// --- Vietnamese first: words that are both English and Telex stay Vietnamese
 	{
 		AutoSwitch as;
 		AutoSwitchResult r = word(as, "is", Q, Q);
-		check(r.replace && !r.vietnamese && r.text == u32("is"), "'is' is restored to English");
+		check(!r.replace && r.vietnamese && r.text == u32("í"), "'is' stays Vietnamese (í)");
 		r = word(as, "as", Q, Q);
-		check(r.replace && r.text == u32("as"), "'as' is restored to English");
+		check(!r.replace && r.text == u32("á"), "'as' stays Vietnamese (á)");
 	}
 	{
 		AutoSwitch as;
@@ -108,7 +108,7 @@ int main() {
 		word(as, "is", Q, Q);
 		word(as, "my", Q, Q);
 		AutoSwitchResult r = word(as, "car", Q, Q);
-		check(r.replace && !r.vietnamese && r.text == u32("car"), "'car' after English words stays English");
+		check(!r.replace && r.vietnamese && r.text == u32("cả"), "'car' stays Vietnamese (cả) even after English words");
 	}
 	{
 		AutoSwitch as;
@@ -170,15 +170,51 @@ int main() {
 	// --- Two short words that are each ambiguous switch together
 	{
 		AutoSwitch as;
-		AutoSwitchResult r1 = word(as, "an", Q, D);
-		AutoSwitchResult r2 = word(as, "all", Q, D);
-		check(!r1.switchLayout, "'an' alone is too ambiguous to switch");
-		check(r2.switchLayout && r2.replacePrevious && r2.previousText == u32("an") && r2.text == u32("all"),
-		      "'an all' typed QWERTY on Dvorak switches at the 2nd word and fixes both");
+		AutoSwitchResult r1 = word(as, "an", D, Q);
+		AutoSwitchResult r2 = word(as, "em", D, Q);
+		check(!r1.switchLayout, "Dvorak 'an' on QWERTY alone is too ambiguous to switch");
+		check(r2.switchLayout && r2.replacePrevious && r2.previousText == u32("an") && r2.text == u32("em"),
+		      "'an em' typed Dvorak on QWERTY switches at the 2nd word and fixes both");
 		AutoSwitch as2;
-		word(as2, "an", Q, D);
+		word(as2, "an", D, Q);
 		as2.breakPair();
-		check(!word(as2, "all", Q, D).replacePrevious, "after enter/click the words are not fixed together");
+		check(!word(as2, "em", D, Q).replacePrevious, "after enter/click the words are not fixed together");
+	}
+
+	// --- Vietnamese typing fixes (found with tests/vietnamese_sim.cpp)
+	{
+		// the first word after a pause is also a word on the wrong layout ("na"): fixed with the second
+		AutoSwitch as;
+		AutoSwitchResult r1 = word(as, "ba", Q, D);
+		AutoSwitchResult r2 = word(as, "khas", Q, D);
+		check(!r1.switchLayout && r2.switchLayout && r2.replacePrevious && r2.previousText == u32("ba") && r2.text == u32("khá"),
+		      "'ba khas' typed QWERTY on Dvorak: the 2nd word switches and fixes 'ba'");
+		// a rare English reading ("pag") does not hold the wrong layout
+		AutoSwitch as2;
+		check(word(as2, "rau", Q, D).switchLayout, "QWERTY 'rau' shows 'pag' on Dvorak: switch at once");
+	}
+	{
+		AutoSwitch as;
+		check(!word(as, "nam,", Q, Q).switchLayout, "'nam,' on the right layout: a comma after a word is normal");
+		check(!word(as, "pamx", Q, Q).switchLayout, "rare syllable 'pãm' on the right layout does not switch");
+		check(!word(as, "nghieeng", D, D).switchLayout, "rare syllable 'nghiêng' on Dvorak does not switch");
+		AutoSwitch as2;
+		AutoSwitchResult r = word(as2, "aos", D, Q);
+		check(r.switchLayout && r.text == u32("áo"), "Dvorak 'aos' shows 'as;' on QWERTY: ';' is the s key, switch");
+	}
+	{
+		// a switch in the middle of a typo made it gibberish: go back at the end of the word
+		AutoSwitch as;
+		as.markEarlySwitch(D);
+		typeAs(as, "cbar", D);
+		AutoSwitchResult r = as.endWord(Q, true);
+		check(r.switchLayout && r.layout == D && r.text == u32("cbar"), "typo 'cbar': the mid-word switch is undone");
+	}
+	{
+		// Vietnamese mode: a rare English word does not keep the wrong layout
+		AutoSwitch as;
+		AutoSwitchResult r = word(as, "laf", Q, D);
+		check(r.switchLayout && r.text == u32("là"), "QWERTY 'laf' shows 'pay' on Dvorak: switch to 'là'");
 	}
 
 	// --- Early (mid-word) switch
