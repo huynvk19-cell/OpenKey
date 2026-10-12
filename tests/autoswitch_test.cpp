@@ -211,6 +211,21 @@ int main() {
 		check(r.switchLayout && r.layout == D && r.text == u32("cbar"), "typo 'cbar': the mid-word switch is undone");
 	}
 	{
+		// from a problem log: Dvorak "anw" (a-breve n) shows "al," on QWERTY, an English word
+		AutoSwitch as;
+		AutoSwitchResult r = word(as, "anw", D, Q);
+		check(r.switchLayout && r.text == u32("ăn"), "Dvorak 'anw' shows 'al,' on QWERTY: switch to 'ăn'");
+		// but English typed right is left alone when the other reading has no Telex marks ("dr" / "ep")
+		check(!word(as, "dr", Q, Q).switchLayout, "'dr' on QWERTY stays");
+	}
+	{
+		// from a problem log: backspace or a click before a word must not make the next word untouchable
+		AutoSwitch as;
+		as.invalidate();
+		AutoSwitchResult r = word(as, "taij", Q, D);
+		check(r.switchLayout && r.text == u32("tại"), "a click before the word: QWERTY 'taij' on Dvorak still switches");
+	}
+	{
 		// Vietnamese mode: a rare English word does not keep the wrong layout
 		AutoSwitch as;
 		AutoSwitchResult r = word(as, "laf", Q, D);

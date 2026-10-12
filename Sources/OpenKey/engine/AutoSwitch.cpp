@@ -450,7 +450,14 @@ void AutoSwitch::pushKey(unsigned int scanCode, bool shift, bool capsLock) {
 	_keys.push_back({ scanCode, shift, capsLock });
 }
 
-void AutoSwitch::invalidate() { _valid = false; _previousLean = 0; _previousKeys.clear(); }
+// Before the first key of a word (a click to place the cursor, backspace over the
+// word before, another window) only the link with the word before is lost: the
+// new word itself is still safe to fix.
+void AutoSwitch::invalidate() {
+	if (!_keys.empty()) _valid = false;
+	_previousLean = 0;
+	_previousKeys.clear();
+}
 
 // How good a reading is. Typing Vietnamese comes first: in Vietnamese mode a
 // rare English word ("pag", "yr") must not keep the wrong layout when the other
@@ -596,6 +603,12 @@ AutoSwitchResult AutoSwitch::endWord(int currentLayout, bool vietnameseMode, boo
 	// a typo or a name than someone else typing, so ask for a common word.
 	int needed = _confirmedWords > 0 && current.clean ? AUTO_SWITCH_TYPO_SCORE : AUTO_SWITCH_MIN_OTHER_SCORE;
 	bool doSwitch = lean > 0 && (currentScore == 0 ? otherScore >= needed : (otherScore >= _endStrong && lean >= _endMargin));
+	// Vietnamese first: what is on screen is not Vietnamese at all ("al," English)
+	// while the other reading is a common Vietnamese word typed with Telex marks
+	// (a-breve n typed as "anw")
+	if (!doSwitch && vietnameseMode && lean > 0 && current.vietnamese == 0 && other.vietnamese >= _endStrong &&
+		other.vietnameseChanged && other.vietnamese > (current.english - AUTO_SWITCH_ENGLISH_PENALTY))
+		doSwitch = true;
 	// The switch in the middle of this word made it no word at all (a typo or a
 	// name on the right layout): go back and retype what was typed.
 	bool revert = !doSwitch && allowLayoutSwitch && earlyFrom == otherLayout && readingScore(current, vietnameseMode) == 0;

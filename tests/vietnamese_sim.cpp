@@ -458,14 +458,17 @@ int main(int argc, char** argv) {
 	const Reported reported[] = {
 		{ "taij vif ", Q },          // showed "yach vif"
 		{ "taij vif ", D },
+		{ "anw comw ", D },          // problem log: "al," stayed
+		{ "tooi anw comw ", D },
 	};
 	int reportedErrors = 0;
 	for (const Reported& r : reported) {
 		int other = r.habit == Q ? D : Q;
 		std::u32string want = engineAlone(r.keys, r.habit);
-		for (int afterSomeone = 0; afterSomeone < 2; afterSomeone++) {
+		for (int before = 0; before < 3; before++) {
 			Machine m; m.layout = other;
-			if (afterSomeone) m.type("dduwowcj roofi ", other); // someone typed right before, no pause
+			if (before == 1) m.type("dduwowcj roofi ", other); // someone typed right before, no pause
+			if (before == 2) m.as.invalidate();                // a click (or backspace) before typing
 			size_t from = m.screen.size();
 			m.type(r.keys, r.habit);
 			if (m.screen.substr(from) != want) {

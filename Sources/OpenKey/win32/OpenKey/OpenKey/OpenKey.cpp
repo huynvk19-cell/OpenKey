@@ -1126,6 +1126,8 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	}
 
 	if (!replayed && (shortcut || (data->flags & LLKHF_EXTENDED) || !autoSwitchIsTrackedKey(data->scanCode))) {
+		if (_autoSwitch.hasWord() && _autoSwitch.isValid())
+			NkLog("word left alone: key vk 0x%02X in it [%s|%s]", vk, KeysAs(AUTO_LAYOUT_QWERTY).c_str(), KeysAs(AUTO_LAYOUT_DVORAK).c_str());
 		_autoSwitch.invalidate(); //backspace, arrows, delete, shortcuts...
 		_previousWordScreen = -1;
 		return keyboardHookProcessCore(nCode, wParam, lParam);
@@ -1217,6 +1219,8 @@ LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 	case WM_NCXBUTTONUP:
 		//send event signal to Engine
 		vKeyHandleEvent(vKeyEvent::Mouse, vKeyEventState::MouseDown, 0);
+		if (_autoSwitch.hasWord() && _autoSwitch.isValid())
+			NkLog("word left alone: mouse click [%s|%s]", KeysAs(AUTO_LAYOUT_QWERTY).c_str(), KeysAs(AUTO_LAYOUT_DVORAK).c_str());
 		_autoSwitch.invalidate();
 		if (IS_DOUBLE_CODE(vCodeTable)) { //VNI
 			_syncKey.clear();
@@ -1227,6 +1231,8 @@ LRESULT CALLBACK mouseHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 VOID CALLBACK winEventProcCallback(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {
+	if (_autoSwitch.hasWord() && _autoSwitch.isValid())
+		NkLog("word left alone: another window [%s|%s]", KeysAs(AUTO_LAYOUT_QWERTY).c_str(), KeysAs(AUTO_LAYOUT_DVORAK).c_str());
 	_autoSwitch.invalidate();
 	CheckPauseForApp(); //pause / resume right away, so the tray icon shows it
 	//smart switch key
