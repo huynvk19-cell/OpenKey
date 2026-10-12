@@ -54,12 +54,16 @@ static NOTIFYICONDATA nid;
 
 #define POPUP_AUTO_LAYOUT 3000
 #define POPUP_RUN_ON_STARTUP 3010
+#define POPUP_SAVE_LOG 3020
+
+extern bool NhaKeySaveProblemLog(wstring& path);
 
 //NhaKey keeps the menu tiny: everything else just works by itself
 map<UINT, LPCTSTR> menuData = {
 	{POPUP_VIET_ON_OFF, _T("Tiếng Việt")},
 	{POPUP_AUTO_LAYOUT, _T("Tự đổi bàn phím")},
 	{POPUP_RUN_ON_STARTUP, _T("Mở cùng máy tính")},
+	{POPUP_SAVE_LOG, _T("Lưu nhật ký lỗi ra Desktop")},
 	{POPUP_OPENKEY_EXIT, _T("Thoát")},
 };
 
@@ -101,6 +105,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 				APP_SET_DATA(vRunWithWindows, vRunWithWindows ? 0 : 1);
 				OpenKeyHelper::registerRunOnStartup(vRunWithWindows);
 				break;
+			case POPUP_SAVE_LOG: {
+				wstring path;
+				if (NhaKeySaveProblemLog(path))
+					SystemTrayHelper::showMessage(_T("Đã lưu nhật ký lỗi"), (_T("Gửi file này để báo lỗi: ") + path).c_str());
+				else
+					SystemTrayHelper::showMessage(_T("NhaKey"), _T("Không lưu được nhật ký lỗi."));
+				break;
+			}
 			case POPUP_OPENKEY_EXIT:
 				AppDelegate::getInstance()->onOpenKeyExit();
 				break;
@@ -150,6 +162,8 @@ void SystemTrayHelper::createPopupMenu() {
 	AppendMenu(popupMenu, MF_CHECKED, POPUP_VIET_ON_OFF, menuData[POPUP_VIET_ON_OFF]);
 	AppendMenu(popupMenu, MF_CHECKED, POPUP_AUTO_LAYOUT, menuData[POPUP_AUTO_LAYOUT]);
 	AppendMenu(popupMenu, MF_CHECKED, POPUP_RUN_ON_STARTUP, menuData[POPUP_RUN_ON_STARTUP]);
+	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
+	AppendMenu(popupMenu, MF_STRING, POPUP_SAVE_LOG, menuData[POPUP_SAVE_LOG]);
 	AppendMenu(popupMenu, MF_SEPARATOR, 0, 0);
 	AppendMenu(popupMenu, MF_UNCHECKED, POPUP_OPENKEY_EXIT, menuData[POPUP_OPENKEY_EXIT]);
 }

@@ -14,6 +14,7 @@ redistribute your new version, it MUST be open source.
 #include "stdafx.h"
 #include "AppDelegate.h"
 #include "../../../engine/AutoSwitch.h"
+#include <cstdarg>
 
 #pragma comment(lib, "imm32")
 #define IMC_GETOPENSTATUS 0x0005
@@ -698,6 +699,61 @@ static LRESULT passThroughKey(int nCode, WPARAM wParam, LPARAM lParam) {
 	return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 }
 
+//---------------------------------------------------------------- problem log
+//The last decisions NhaKey made, kept in memory only. "Save problem log" in the
+//tray menu writes them to the desktop so a wrong word can be explained.
+static vector<string> _problemLog;
+static size_t _problemLogNext = 0;
+#define PROBLEM_LOG_SIZE 300
+
+static void NkLog(const char* format, ...) {
+	char line[512];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(line, sizeof(line), format, args);
+	va_end(args);
+	char stamped[560];
+	snprintf(stamped, sizeof(stamped), "%10lu %s", (unsigned long)GetTickCount(), line);
+	if (_problemLog.size() < PROBLEM_LOG_SIZE) _problemLog.push_back(stamped);
+	else _problemLog[_problemLogNext] = stamped;
+	_problemLogNext = (_problemLogNext + 1) % PROBLEM_LOG_SIZE;
+}
+
+static const char* LayoutName(int layout) {
+	return layout == AUTO_LAYOUT_QWERTY ? "QWERTY" : layout == AUTO_LAYOUT_DVORAK ? "Dvorak" : "?";
+}
+
+//the word as the keys read on a layout (for the log)
+static string KeysAs(int layout) {
+	std::u32string text;
+	for (size_t i = 0; i < _autoSwitch.keyCount(); i++)
+		text += autoSwitchCharFor(_autoSwitch.keyScanCode(i), _autoSwitch.keyShift(i), false, layout);
+	return autoSwitchToUtf8(text);
+}
+
+//from shlobj.h, which clashes with std::byte here
+extern "C" HRESULT WINAPI SHGetFolderPathW(HWND hwnd, int csidl, HANDLE hToken, DWORD dwFlags, LPWSTR pszPath);
+#define NK_CSIDL_DESKTOPDIRECTORY 0x0010
+
+bool NhaKeySaveProblemLog(wstring& path) {
+	WCHAR desktop[MAX_PATH];
+	if (FAILED(SHGetFolderPathW(NULL, NK_CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop)))
+		return false;
+	path = wstring(desktop) + L"\\NhaKey-nhat-ky.txt";
+	FILE* f = NULL;
+	if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f)
+		return false;
+	fputs("\xEF\xBB\xBFNhaKey problem log (oldest first)\r\n", f);
+	size_t n = _problemLog.size();
+	size_t start = n < PROBLEM_LOG_SIZE ? 0 : _problemLogNext;
+	for (size_t i = 0; i < n; i++) {
+		fputs(_problemLog[(start + i) % n].c_str(), f);
+		fputs("\r\n", f);
+	}
+	fclose(f);
+	return true;
+}
+
 //---------------------------------------------------------------- pause in remote desktop apps
 //Moonlight and UltraViewer send the keys to another computer, which has its own
 //keyboard settings: NhaKey leaves every key alone while one of them is in front
@@ -748,6 +804,7 @@ static bool CheckPauseForApp() {
 		if (lower.compare(0, wcslen(app), app) == 0)
 			paused = true;
 	if (paused != vPausedForApp) {
+		NkLog("%s for %s", paused ? "pause" : "resume", autoSwitchToUtf8(std::u32string(exe.begin(), exe.end())).c_str());
 		vPausedForApp = paused;
 		vPausedAppName = exe;
 		if (vPausedAppName.size() > 4 && lower.compare(lower.size() - 4, 4, L".exe") == 0)
@@ -858,22 +915,43 @@ static void RequestOsLayout(int layout) {
 }
 
 static void SwitchLayout(int layout) {
+	NkLog("switch layout %s -> %s", LayoutName(_wantedLayout), LayoutName(layout));
 	_wantedLayout = layout;
 	RequestOsLayout(layout);
+}
+
+//The layout Windows really used for the last key: the key code it made from the
+//physical key. GetKeyboardLayout is wrong for some apps (browsers, Store apps,
+//consoles), the key code never is.
+static int _keyLayout = AUTO_LAYOUT_UNKNOWN;
+static DWORD _keyLayoutThread = 0;
+
+static void ObserveKeyLayout(UINT scanCode, DWORD vk) {
+	WORD qwerty = VirtualKeyForChar(autoSwitchCharFor(scanCode, false, false, AUTO_LAYOUT_QWERTY));
+	WORD dvorak = VirtualKeyForChar(autoSwitchCharFor(scanCode, false, false, AUTO_LAYOUT_DVORAK));
+	if (qwerty == dvorak) return; //same key on both (a, m, digits)
+	int layout = vk == qwerty ? AUTO_LAYOUT_QWERTY : vk == dvorak ? AUTO_LAYOUT_DVORAK : AUTO_LAYOUT_UNKNOWN;
+	_keyLayoutThread = GetWindowThreadProcessId(GetFocusWindow(), NULL);
+	if (layout != _keyLayout)
+		NkLog("key 0x%02X made vk 0x%02X: app types %s", scanCode, vk, LayoutName(layout));
+	_keyLayout = layout;
 }
 
 //the layout keys must be read with right now; appLayoutOut gets the one the app really has
 static int CurrentLayout(int* appLayoutOut = NULL) {
 	DWORD thread = GetWindowThreadProcessId(GetFocusWindow(), NULL);
-	int appLayout = LayoutOf(GetKeyboardLayout(thread));
+	int appLayout = thread == _keyLayoutThread && _keyLayout != AUTO_LAYOUT_UNKNOWN
+		? _keyLayout : LayoutOf(GetKeyboardLayout(thread));
 	if (appLayoutOut)
 		*appLayoutOut = appLayout;
 	if (!vAutoSwitchLayout || !_layoutTracked) {
 		_wantedLayout = appLayout;
 	} else if (thread == _lastFocusThread) {
 		//changed by hand (Win + Space, language bar): follow the person
-		if (appLayout != _lastAppLayout && appLayout != _wantedLayout && !RecentlyRequested(appLayout))
+		if (appLayout != _lastAppLayout && appLayout != _wantedLayout && !RecentlyRequested(appLayout)) {
+			NkLog("layout changed by hand to %s", LayoutName(appLayout));
 			_wantedLayout = appLayout;
+		}
 	} else if (appLayout != _wantedLayout && appLayout != AUTO_LAYOUT_UNKNOWN && _wantedLayout != AUTO_LAYOUT_UNKNOWN) {
 		RequestOsLayout(_wantedLayout); //another window: bring the layout along
 	}
@@ -897,9 +975,15 @@ static void TypeText(const std::u32string& text) {
 //a word just ended: switch layout and/or retype the word. Returns true if the word was retyped.
 static bool HandleAutoSwitchWordEnd(bool endsWithSpace) {
 	autoSwitchSetModernOrthography(vUseModernOrthography != 0);
-	AutoSwitchResult result = _autoSwitch.endWord(CurrentLayout(),
+	int appLayout = AUTO_LAYOUT_UNKNOWN;
+	int layout = CurrentLayout(&appLayout);
+	string asQwerty = KeysAs(AUTO_LAYOUT_QWERTY), asDvorak = KeysAs(AUTO_LAYOUT_DVORAK);
+	AutoSwitchResult result = _autoSwitch.endWord(layout,
 		vLanguage == 1 && vAutoSwitchLanguage && vCodeTable == 0,
 		vAutoSwitchLayout != 0);
+	NkLog("word end [%s|%s] read %s, app %s, on screen %d: %s%s%s -> %s", asQwerty.c_str(), asDvorak.c_str(),
+		LayoutName(layout), LayoutName(appLayout), _screenCount, result.switchLayout ? "switch " : "",
+		result.replace ? "retype " : "keep", result.replacePrevious ? " +previous" : "", autoSwitchToUtf8(result.text).c_str());
 	if (!endsWithSpace)
 		_autoSwitch.breakPair();
 	if (result.switchLayout)
@@ -932,6 +1016,8 @@ struct ReplayKey { UINT scanCode; bool shift; bool caps; };
 static vector<ReplayKey> _replayQueue;
 
 static void ReplayWordOnLayout(int layout) {
+	NkLog("mid-word switch to %s after [%s|%s], on screen %d, previous %d", LayoutName(layout),
+		KeysAs(AUTO_LAYOUT_QWERTY).c_str(), KeysAs(AUTO_LAYOUT_DVORAK).c_str(), _screenCount, _previousWordScreen);
 	vector<ReplayKey> keys;
 	bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
 	for (size_t i = 0; i < _autoSwitch.keyCount(); i++)
@@ -1011,7 +1097,16 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 		if (!shortcut && hadWord && HandleAutoSwitchWordEnd(vk == VK_SPACE)) {
 			_autoSwitch.reset();
 			_screenCount = 0;
-			return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam); //type the space itself
+			//the retyped word was sent as input: send the space (enter, tab) after it,
+			//letting this key through would put it on screen before the retyped word
+			INPUT in[2] = {};
+			in[0].type = INPUT_KEYBOARD;
+			in[0].ki.wVk = (WORD)vk;
+			in[0].ki.dwExtraInfo = 1;
+			in[1] = in[0];
+			in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+			RawSendInput(2, in, sizeof(INPUT));
+			return 1;
 		}
 		if (!hadWord) { //two spaces, enter on an empty line...
 			_autoSwitch.breakPair();
@@ -1055,6 +1150,8 @@ LRESULT CALLBACK keyboardHookProcess(int nCode, WPARAM wParam, LPARAM lParam) {
 		if (shift) _flag |= MASK_SHIFT;
 		if (caps) _flag |= MASK_CAPITAL;
 	}
+	if (!replayed)
+		ObserveKeyLayout(data->scanCode, data->vkCode);
 	_autoSwitch.pushKey(data->scanCode, shift, caps);
 
 	int appLayout = AUTO_LAYOUT_UNKNOWN;

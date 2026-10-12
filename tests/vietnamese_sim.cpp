@@ -453,6 +453,28 @@ int main(int argc, char** argv) {
 	}
 	if (csv) fclose(csv);
 
+	// cases people reported: QWERTY Telex typed while Dvorak is on (and the other way round)
+	struct Reported { const char* keys; int habit; };
+	const Reported reported[] = {
+		{ "taij vif ", Q },          // showed "yach vif"
+		{ "taij vif ", D },
+	};
+	int reportedErrors = 0;
+	for (const Reported& r : reported) {
+		int other = r.habit == Q ? D : Q;
+		std::u32string want = engineAlone(r.keys, r.habit);
+		for (int afterSomeone = 0; afterSomeone < 2; afterSomeone++) {
+			Machine m; m.layout = other;
+			if (afterSomeone) m.type("dduwowcj roofi ", other); // someone typed right before, no pause
+			size_t from = m.screen.size();
+			m.type(r.keys, r.habit);
+			if (m.screen.substr(from) != want) {
+				reportedErrors++;
+				printf("REPORTED CASE FAILS: %s -> %s (expected %s)\n", r.keys, utf8(m.screen.substr(from)).c_str(), utf8(want).c_str());
+			}
+		}
+	}
+
 	printf("%d sentences of %d syllables per scenario (seed %u), %zu rare syllables known to the engine\n\n",
 		sentences, wordsPerSentence, seed, rare.size());
 	printf("%-30s  %-14s  %s\n", "scenario", "word errors", "texts with an error");
@@ -466,8 +488,9 @@ int main(int argc, char** argv) {
 		printf("  %-32s %5.2f%% / %5.2f%%\n", kStyleNames[st],
 			styleTally[st][0].words ? 100.0 * styleTally[st][0].wordErrors / styleTally[st][0].words : 0.0,
 			styleTally[st][1].words ? 100.0 * styleTally[st][1].wordErrors / styleTally[st][1].words : 0.0);
+	printf("\nreported cases: %s\n", reportedErrors ? "FAIL" : "all right");
 	printf("\nexamples\n");
 	for (int sc = 0; sc < SCENARIOS; sc++)
 		for (const std::string& e : tally[sc].examples) printf("  [%s] %s\n", names[sc], e.c_str());
-	return 0;
+	return reportedErrors ? 1 : 0;
 }
